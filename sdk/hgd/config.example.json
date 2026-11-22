@@ -1,0 +1,13 @@
+{
+  "_comment": "ohgd 配置文件。打包版会复制为 hgd/config.json。命令行 flag 优先于这里",
+  "addr": "127.0.0.1:8899",
+  "profile": "anonymous.json",
+  "cache": "./cache",
+  "quality": "1080p",
+  "max_cache_mb": 2048,
+  "channel": "真人剧",
+  "warm": 3,
+  "signer_url": "http://127.0.0.1:19830",
+  "signer_token": "",
+  "expose_key": false
+}

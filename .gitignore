@@ -1,0 +1,22 @@
+__pycache__/
+*.pyc
+
+# 播放器运行时缓存、调试截图
+prototype/.cache/
+prototype/*.png
+prototype/lib/*.dll
+
+# SDK 运行时文件：设备档案、本机配置、缓存、编译产物
+sdk/hgd/anonymous.json
+sdk/hgd/config.json
+sdk/hgd/actor_id.txt
+sdk/hgd/cache/
+*.exe
+
+# 打包
+build/
+dist/
+*.spec
+
+# CI 下载的依赖
+deps/

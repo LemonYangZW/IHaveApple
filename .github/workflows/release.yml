@@ -1,0 +1,66 @@
+name: release
+
+# 推送 v* 标签：打包 Windows 版并发布到同名 Release。手动运行只打包，产物在 Actions 的 artifact 里
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      MPV_TAG: "20261111"                                 # shinchiro/mpv-winbuild-cmake 的发布
+      FFMPEG_ASSET: ffmpeg-n8.1-latest-win64-gpl-8.1.zip  # BtbN/FFmpeg-Builds 的 latest 发布
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: sdk/hgd/go.mod
+          cache: false
+
+      - name: 安装 Python 依赖
+        run: pip install -r prototype/requirements.txt pyinstaller
+
+      - name: 下载 libmpv 和 ffmpeg
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force deps | Out-Null
+          gh release download $env:MPV_TAG -R shinchiro/mpv-winbuild-cmake -p "mpv-dev-x86_64-2*.7z" -D deps
+          7z x (Get-Item deps/mpv-dev-*.7z).FullName -odeps/mpv libmpv-2.dll -r
+          gh release download latest -R BtbN/FFmpeg-Builds -p $env:FFMPEG_ASSET -D deps
+          Expand-Archive "deps/$env:FFMPEG_ASSET" deps/ffmpeg
+
+      - name: 打包
+        shell: pwsh
+        run: |
+          $ver = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { "dev-$($env:GITHUB_SHA.Substring(0, 7))" }
+          $mpv = (Get-ChildItem deps/mpv -Recurse -Filter libmpv-2.dll | Select-Object -First 1).FullName
+          $ff  = (Get-ChildItem deps/ffmpeg -Recurse -Filter ffmpeg.exe | Select-Object -First 1).FullName
+          ./scripts/build-windows.ps1 -Version $ver -Mpv $mpv -Ffmpeg $ff
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: IHaveApple-win64
+          path: dist/*.zip
+
+      - name: 发布到 Release
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $zip = (Get-Item dist/*.zip).FullName
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --title "IHaveApple $tag" --notes-file .github/release-notes.md
+          }
+          gh release upload $tag $zip --clobber

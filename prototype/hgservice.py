@@ -1,0 +1,1025 @@
+"""hgservice — 把本地 SDK（ohgd）包装成 QML 可用的后端
+
+职责：
+  · 拉剧单与分集，组装成 QML 期望的 drama 结构
+  · 按需解析播放地址（后台线程，不阻塞 UI）
+  · 对服务端做预热与限流退避
+
+QML 用法（注册为 context property `Backend`）：
+    Backend.dramas                      // [{id, title, total, covers, desc}]
+    Backend.prepare(dramaId, episode, definition, strict, seekable)   // 请求播放地址；definition 如 "720p"，"" = 默认
+                                        // strict：只要这一档（换清晰度时用），否则本地已缓存的任意一档优先
+                                        // seekable：要从中途起播，等这一集落盘再给地址
+    signal episodeReady(dramaId, episode, url, definition)
+    signal episodeFailed(dramaId, episode, reason, definition)
+"""
+
+import json
+import os
+import random
+import shutil
+import subprocess
+import sys
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from queue import Empty, Queue
+
+from PySide6.QtCore import Property, QObject, QSettings, Signal, Slot
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+# 打包版（PyInstaller）：SDK 在 exe 旁边的 hgd/、ffmpeg 在 ffmpeg/；开发时用 hongguo 工程里的 SDK。
+# 两种情况都可以用环境变量 IHAVEAPPLE_SDK 指定 SDK 目录
+FROZEN = getattr(sys, "frozen", False)
+APP_DIR = os.path.dirname(sys.executable) if FROZEN else HERE
+SDK_DIR = os.environ.get("IHAVEAPPLE_SDK") or (
+    os.path.join(APP_DIR, "hgd") if FROZEN else os.path.join(HERE, "..", "..", "hongguo", "hgd"))
+SDK_EXE = os.path.join(SDK_DIR, "ohgd.exe")
+SDK_CACHE = os.path.join(SDK_DIR, "cache")
+API = "http://127.0.0.1:8899"
+QUALITY = "1080p"                 # 界面选「自动」（definition 为空）时用的清晰度
+SWITCH_WAIT = 40                  # 播放中换清晰度时，最多等新清晰度落盘多久（秒）
+
+# 顶部频道：四个 tab（顺序与界面一致）。后端 feed 用 channel 参数区分内容流，
+# 实测「推荐」是混合推荐流，跟「真人剧」返回的不是同一批；「AI剧」上游暂无内容。
+CHANNELS = ("真人剧", "漫剧", "AI剧", "推荐")
+DEFAULT_CHANNEL = "推荐"
+
+# 封面缓存。服务端封面是 HEIC（Content-Type: image/heic），Qt 无法解码，
+# 所以用 ffmpeg 转成 JPEG 存本地，QML 只读这个 file:// 地址。
+COVER_DIR = os.path.join(HERE, ".cache", "covers")
+
+# feed 缓存：/v1/feed 每次回源要 4–5 秒（后端不缓存），所以按频道缓存在本地。
+# 切回看过的频道 0 秒出画面，冷启动也能先出画面再后台刷新。
+FEED_DIR = os.path.join(HERE, ".cache", "feeds")
+FEED_TTL = 30 * 60                # 缓存被认为「够新」的时长（秒）；过期仍可先用后刷
+COVER_WIDTH = 480                 # 竖屏海报按窗口宽度出图，够清楚又不拖慢加载
+_BUNDLED_FFMPEG = os.path.join(APP_DIR, "ffmpeg", "ffmpeg.exe")
+FFMPEG = _BUNDLED_FFMPEG if FROZEN and os.path.exists(_BUNDLED_FFMPEG) else shutil.which("ffmpeg")
+# 转码是 CPU 密集的 HEVC 解码，必须让着播放器（libmpv 是软渲染）：
+# 低优先级 + 每路单线程。搜索结果一次要补十来张，2 路太慢，4 路低优先级实测不影响播放。
+_COVER_NICE = getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0)
+COVER_WORKERS = 4
+
+# 推荐池：一次 feed 单页（实测 9 部）全部收入，首屏从里面挑一部推荐。
+# 不逐部预拉分集：feed 自带 episode_count，分集在真正要播时才拉（见 _prepare），
+# 这样启动只花一次 feed 请求，比「4 部 × 每部拉分集」快得多。
+MAX_DRAMAS = 12
+# 分集一次全取（接口本身一次返回全部）；这个上限只是防御，免得异常数据撑爆内存
+EPISODES_PER_SERIES = 800
+
+# 封面占位色（内容占位，不是 UI 色板）
+COVER_PAIRS = [
+    ("#5B2333", "#C2595E"), ("#3C2A4D", "#B27BA8"),
+    ("#1E2B38", "#4F7A94"), ("#4A3420", "#C9965A"),
+]
+
+
+class AnonLimited(Exception):
+    """上游对匿名设备关闭了数据通道（返回空体）。
+
+    这是上游的反爬额度，重试不会恢复，必须立刻失败并给出人话提示。
+    """
+
+
+def _api(path, timeout=40, tries=4, gap=2.5):
+    last = None
+    for _ in range(tries):
+        try:
+            with urllib.request.urlopen(API + path, timeout=timeout) as r:
+                return json.loads(r.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            body = ""
+            try:
+                body = e.read().decode("utf-8", "replace")
+            except Exception:
+                pass
+            # 额度类错误重试多少次都一样，直接抛出去让上层给提示
+            if "anonymous response was empty" in body or "rate limited" in body:
+                raise AnonLimited(body) from None
+            last = e
+            time.sleep(gap)
+        except Exception as e:
+            last = e
+            time.sleep(gap)
+    raise last
+
+
+def _file_url(path):
+    return "file:///" + os.path.abspath(path).replace("\\", "/")
+
+
+def _cover_file(drama_id, url):
+    """下载封面并转成本地 JPEG，返回 file:/// 地址；失败返回 ""（QML 退回占位渐变）。
+
+    服务端给的是 HEIC，Qt 自己解不了：先用 ftyp 盒子判断格式，HEIC 走 ffmpeg 转码。
+    转码结果按剧 id 缓存，同一部剧只解码一次。
+    """
+    if not url:
+        return ""
+    out = os.path.join(COVER_DIR, f"{drama_id}.jpg")
+    if os.path.exists(out) and os.path.getsize(out) > 1024:
+        return _file_url(out)
+    os.makedirs(COVER_DIR, exist_ok=True)
+    tmp = os.path.join(COVER_DIR, f".{drama_id}.dl")
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=25) as r, open(tmp, "wb") as f:
+            shutil.copyfileobj(r, f)
+    except Exception as e:
+        print(f"[sdk] cover download failed {drama_id}: {e}", flush=True)
+        return ""
+    try:
+        with open(tmp, "rb") as f:
+            head = f.read(16)
+        is_heic = b"ftyphei" in head or b"ftypmif1" in head or url.lower().endswith(".heic")
+        if is_heic:
+            if not FFMPEG:
+                print("[sdk] 找不到 ffmpeg，封面无法转码（界面退回占位渐变）", flush=True)
+                return ""
+            subprocess.run(
+                [FFMPEG, "-y", "-loglevel", "error", "-threads", "1", "-i", tmp,
+                 "-frames:v", "1", "-vf", f"scale={COVER_WIDTH}:-2", "-q:v", "5", out],
+                check=True, timeout=60,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) | _COVER_NICE,
+            )
+        else:
+            os.replace(tmp, out)      # 已经是 JPEG，直接用
+    except Exception as e:
+        print(f"[sdk] cover transcode failed {drama_id}: {e}", flush=True)
+        return ""
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+    return _file_url(out) if os.path.exists(out) else ""
+
+
+def _wait_cached(eid, definition, timeout=SWITCH_WAIT):
+    """换清晰度：等 SDK 把这一档落盘（3–8 秒）。
+
+    没落盘时 /v1/stream 是实时转封装的流，不能 seek，只能从头播，接不上原位置；
+    落盘后同一个地址就是普通 mp4，可以从原位置起播。等待期间原画面照常播放。
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        r = _api(f"/v1/cache/prewarm/{eid}?definition={definition}", timeout=60, tries=1)
+        if r.get("state") == "ready":
+            return
+        time.sleep(1.0)
+    raise TimeoutError("新清晰度准备超时")
+
+
+def _url_definition(url, fallback):
+    """播放地址里实际的清晰度（缓存优先时可能和请求的不同）"""
+    q = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+    return (q.get("definition") or [fallback])[0]
+
+
+def _url_key(definition, strict):
+    """播放地址缓存的键：同一清晰度的 strict / 非 strict 请求可能拿到不同的地址"""
+    return f"{definition}!" if strict else definition
+
+
+class HgService(QObject):
+    dramasChanged = Signal()
+    episodeReady = Signal(str, int, str, str) # dramaId, episode(0-based), url, definition（与请求时一致）
+    episodeFailed = Signal(str, int, str, str) # dramaId, episode, reason, definition
+    statusChanged = Signal()
+    channelChanged = Signal()
+    toast = Signal(str)
+    searchResults = Signal(str, list)         # query, [{id,title,total,covers,desc}]
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._dramas = []
+        self._episodes = {}      # dramaId -> [ {id, number, label, duration, url, state} ]
+        self._fetching = set()   # 正在拉分集的剧 id（避免同一部并发拉两次）
+        self._lock = threading.Lock()
+        self._status = "idle"
+        self._proc = None
+        self._recommend = ""     # 首屏推荐（每次启动换一部）
+        self._channel = self._saved_channel()
+        self._feed_cache = {}    # channel -> {items, ts}；有它切频道就不用等 4–5 秒
+        self._feed_inflight = {} # channel -> Event：同频道的并发请求合并成一次
+        self._warming = False    # 是否已有预热线程在跑（避免重复预热）
+        self._covering = False   # 是否已有封面补全在跑（避免两批抢同一批剧）
+        self._cover_again = False  # 期间又有新剧要补，等当前批结束后再来一轮
+        self._channel_last = {}  # channel -> 上次在该频道看的剧，切回来直接回到这部
+        self._feed_ids = []      # 当前频道 feed 的剧 id 顺序（不含搜索并入的剧，滚动换剧按它走）
+        self._prefetched = set() # (dramaId, ep, definition) 已排队预取的集，避免重复请求
+        self._preload_queue = [] # 预载队列 [(dramaId, ep, definition)]，按播放页给的顺序逐个落盘
+        self._preloading = False # 预载线程是否在跑
+        self._current_drama = "" # 最近一次准备播放的剧（用于记录 _channel_last）
+        self._load_feed_cache()
+
+    # ---------- 生命周期 ----------
+    def ensure_service(self):
+        if self._alive():
+            return
+        if not os.path.exists(SDK_EXE):
+            self._status = "error"
+            self.toast.emit(f"找不到 SDK：{SDK_EXE}")
+            return
+        try:
+            cmd = [SDK_EXE, "-addr", "127.0.0.1:8899", "-cache", os.path.abspath(SDK_CACHE)]
+            if FROZEN and FFMPEG:
+                cmd += ["-ffmpeg", FFMPEG]      # 打包版用自带的 ffmpeg（开发时按 SDK 的 config.json）
+            self._proc = subprocess.Popen(
+                cmd,
+                cwd=SDK_DIR,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except Exception as e:
+            self._status = "error"
+            self.toast.emit(f"SDK 启动失败：{e}")
+            return
+        for _ in range(80):
+            if self._alive():
+                return
+            time.sleep(0.5)
+        self._status = "error"
+        self.toast.emit("SDK 启动超时")
+
+    def _alive(self):
+        try:
+            with urllib.request.urlopen(API + "/v1/health", timeout=2) as r:
+                return r.status == 200
+        except Exception:
+            return False
+
+    def shutdown(self):
+        if self._proc:
+            try:
+                self._proc.terminate()
+            except Exception:
+                pass
+
+    # ---------- 数据 ----------
+    @Property(list, notify=dramasChanged)
+    def dramas(self):
+        return self._dramas
+
+    @Property(str, notify=statusChanged)
+    def status(self):
+        return self._status
+
+    # ---------- 频道（顶部 tab） ----------
+    @Property(str, notify=channelChanged)
+    def channel(self):
+        return self._channel
+
+    @Property(list, constant=True)
+    def channels(self):
+        return list(CHANNELS)
+
+    def _saved_channel(self):
+        try:
+            ch = QSettings().value("feed/channel", DEFAULT_CHANNEL, type=str)
+        except Exception:
+            ch = DEFAULT_CHANNEL
+        return ch if ch in CHANNELS else DEFAULT_CHANNEL
+
+    @Slot(str)
+    def set_channel(self, ch):
+        """切换频道：有本地缓存就立刻出画面，同时后台静默刷新。"""
+        ch = (ch or "").strip()
+        if ch not in CHANNELS or ch == self._channel:
+            return
+        # 记住离开的频道正在看的剧，切回来时直接回到这部（像切 tab 回到上次位置）
+        if self._current_drama and self._channel:
+            self._channel_last[self._channel] = self._current_drama
+            self._save_feed_cache(self._channel)
+        self._channel = ch
+        try:
+            QSettings().setValue("feed/channel", ch)
+        except Exception:
+            pass
+        self.channelChanged.emit()
+        print(f"[sdk] 切换频道 -> {ch}", flush=True)
+
+        entry = self._feed_cache.get(ch)
+        if entry is not None:
+            # 命中缓存就立即出画面；空频道（items 为空）也一样，不用再等请求超时
+            age = time.time() - entry.get("ts", 0)
+            print(f"[sdk] {ch} 命中本地缓存（{age / 60:.0f} 分钟前），立即出画面", flush=True)
+            self._apply_items(ch, entry.get("items") or [], self._channel_last.get(ch, ""),
+                              random_fallback=False)
+            threading.Thread(target=self._refresh_channel, args=(ch,), daemon=True).start()
+            return
+
+        with self._lock:
+            self._dramas = []        # 无缓存：先清空，界面立刻离开上一频道的剧
+            self._recommend = ""
+        self._status = "loading"
+        self.dramasChanged.emit()
+        self.statusChanged.emit()
+        self.load_async(ch)
+
+    # 首屏推荐：每次启动换一部（排除上次推荐过的那部），QML 用它决定首屏播放哪部
+    @Property(str, notify=dramasChanged)
+    def recommendId(self):
+        return self._recommend
+
+    # 当前频道 feed 的顺序（滚动换剧用）。搜索结果只并入 dramas，不改变这个顺序。
+    @Property(list, notify=dramasChanged)
+    def feedIds(self):
+        return self._feed_ids
+
+    @Slot()
+    def ensureCovers(self):
+        """补齐所有剧的封面。启动时只转前几张，打开搜索 / 历史页面时再补齐剩下的。"""
+        self._backfill_covers_async()
+
+    def load_async(self, channel=None):
+        """启动加载：有本地缓存就先出画面，再后台刷新（首屏不再干等 4–5 秒）。"""
+        ch = channel if channel is not None else self._channel
+        entry = self._feed_cache.get(ch)
+        # 上次停在没内容的频道（比如点过 AI剧 就关窗口）：别让首屏一片空白，回退默认频道
+        if channel is None and entry is not None and not (entry.get("items") or []):
+            print(f"[sdk] 上次的频道「{ch}」没有内容，首屏回退到「{DEFAULT_CHANNEL}」", flush=True)
+            self._channel = DEFAULT_CHANNEL
+            try:
+                QSettings().setValue("feed/channel", DEFAULT_CHANNEL)
+            except Exception:
+                pass
+            self.channelChanged.emit()
+            ch = DEFAULT_CHANNEL
+            entry = self._feed_cache.get(ch)
+        if entry is not None:
+            print(f"[sdk] {ch} 用本地缓存先出画面（{len(entry.get('items') or [])} 部）", flush=True)
+            self._apply_items(ch, entry.get("items") or [], "", random_fallback=True)
+            threading.Thread(target=self._refresh_channel, args=(ch,), daemon=True).start()
+            self.warm_channels_async()
+            return
+        threading.Thread(target=self._load, args=(ch, channel is None), daemon=True).start()
+
+    # ---------- 缓存 ----------
+    def _cache_path(self, ch):
+        return os.path.join(FEED_DIR, ch + ".json")
+
+    def _load_feed_cache(self):
+        """启动时把上次的 feed 缓存读进内存（含每个频道上次看的剧）。"""
+        try:
+            os.makedirs(FEED_DIR, exist_ok=True)
+        except Exception:
+            return
+        for ch in CHANNELS:
+            p = self._cache_path(ch)
+            if not os.path.exists(p):
+                continue
+            try:
+                with open(p, encoding="utf-8") as f:
+                    d = json.load(f)
+                items = d.get("items") or []
+                # 空 items 也缓存：无内容的频道（AI剧）不该每次切过去都等一次请求
+                self._feed_cache[ch] = {"items": items, "ts": float(d.get("ts") or 0)}
+                if d.get("last"):
+                    self._channel_last[ch] = str(d["last"])
+            except Exception as e:
+                print(f"[sdk] feed 缓存读取失败 {ch}: {e}", flush=True)
+
+    def _save_feed_cache(self, ch):
+        entry = self._feed_cache.get(ch)
+        if not entry:
+            return
+        try:
+            os.makedirs(FEED_DIR, exist_ok=True)
+            tmp = self._cache_path(ch) + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"items": entry["items"], "ts": entry["ts"],
+                           "last": self._channel_last.get(ch, "")}, f, ensure_ascii=False)
+            os.replace(tmp, self._cache_path(ch))
+        except Exception as e:
+            print(f"[sdk] feed 缓存写入失败 {ch}: {e}", flush=True)
+
+    def _fetch_feed(self, ch):
+        """请求一个频道的 feed，返回 items。空频道（上游不认）返回 []，其他错误抛出。"""
+        path = "/v1/feed?channel=" + urllib.parse.quote(ch)
+        try:
+            # feed 一次要 4–5 秒，重试 4 次会把「无内容频道」拖成 9 秒；
+            # 只重试一次，失败交给上层用缓存兜底
+            feed = _api(path, timeout=30, tries=2, gap=1.0)
+        except Exception as e:
+            # 上游没有这个频道（实测 AI剧 返回 502 unknown discover channel）：
+            # 不是故障，按「暂无内容」处理
+            try:
+                if isinstance(e, urllib.error.HTTPError) and e.code == 502:
+                    if "unknown discover channel" in e.read().decode("utf-8", "replace"):
+                        return []
+            except Exception:
+                pass
+            raise
+        return feed.get("items") or []
+
+    def _fetch_feed_shared(self, ch):
+        """同一个频道只发一次请求：预热和用户切换撞在一起时，后者等前者的结果。
+
+        feed 一次要 4–5 秒，重复请求会让「第一次切频道」多等一倍。
+        """
+        with self._lock:
+            ev = self._feed_inflight.get(ch)
+            if ev is not None:
+                owner = False
+            else:
+                ev = threading.Event()
+                self._feed_inflight[ch] = ev
+                owner = True
+        if not owner:
+            ev.wait(40)
+            with self._lock:
+                entry = self._feed_cache.get(ch)
+            return (entry or {}).get("items") or []
+        try:
+            items = self._fetch_feed(ch)
+            self._feed_cache[ch] = {"items": items, "ts": time.time()}
+            self._save_feed_cache(ch)
+            return items
+        finally:
+            with self._lock:
+                self._feed_inflight.pop(ch, None)
+            ev.set()
+
+    def _apply_items(self, ch, items, prefer="", random_fallback=True):
+        """把 feed items 变成 QML 用的剧单并发出信号。prefer：优先播哪部。"""
+        out = []
+        for i, s in enumerate(items[:MAX_DRAMAS]):
+            out.append({
+                "id": s["id"],
+                "title": s.get("title", ""),
+                # feed 自带真实集数；不再为拿集数而预拉分集（那会让启动慢好几秒）
+                "total": s.get("episode_count", 0),
+                "covers": list(COVER_PAIRS[i % len(COVER_PAIRS)]),
+                "cover": "",                      # 本地转码后的封面，后台补
+                "cover_url": s.get("cover_url", ""),
+                "desc": s.get("description", ""),
+            })
+        ids = [d["id"] for d in out]
+        if prefer and prefer in ids:
+            rec = prefer                          # 切回频道：回到上次看的那部
+        elif random_fallback:
+            rec = self._pick_recommend(out)       # 启动：每次换一部
+        else:
+            rec = ids[0] if ids else ""
+        with self._lock:
+            self._dramas = out
+            self._recommend = rec
+            self._feed_ids = list(ids)
+        print(f"[sdk] feed ready: {len(out)} 部（{ch}），推荐 {rec}", flush=True)
+        # 空频道（如 AI剧 上游暂无内容）不算错误，界面显示「暂无内容」
+        self._status = "ready" if out else "empty"
+        self.dramasChanged.emit()
+        self.statusChanged.emit()
+        if out:
+            self._backfill_covers_async(limit=3)     # 先转首屏这几张，其余打开面板时再补
+        return out
+
+    def _load(self, channel=None, startup=False):
+        """网络拉 feed（无缓存时的首次加载）。startup=True 表示这是启动加载。"""
+        ch = channel if channel is not None else self._channel
+        self._status = "loading"
+        self.statusChanged.emit()
+        try:
+            self.ensure_service()
+            items = self._fetch_feed_shared(ch)
+        except Exception as e:
+            if ch != self._channel:
+                return                      # 请求期间已经切走，丢弃
+            if ch in self._feed_cache:      # 有旧缓存就继续用，别把界面清空
+                print(f"[sdk] {ch} 刷新失败，沿用缓存: {e}", flush=True)
+                return
+            self._status = "error"
+            self.statusChanged.emit()
+            self.toast.emit(f"拉取剧单失败：{e}")
+            return
+        if ch != self._channel:
+            return                          # 期间切了频道，这批数据不要了
+
+        # 启动时发现记住的频道没有内容（如上次停在 AI剧）：回退默认频道，别让首屏空白
+        if startup and not items and ch != DEFAULT_CHANNEL:
+            print(f"[sdk] 频道「{ch}」没有内容，首屏回退到「{DEFAULT_CHANNEL}」", flush=True)
+            self._channel = DEFAULT_CHANNEL
+            try:
+                QSettings().setValue("feed/channel", DEFAULT_CHANNEL)
+            except Exception:
+                pass
+            self.channelChanged.emit()
+            self._load(DEFAULT_CHANNEL, False)
+            return
+
+        # 启动路径：首屏每次换一部（不用 _channel_last，那是「切频道回到上次」才用的）
+        self._apply_items(ch, items, "", random_fallback=True)
+        if items:
+            self.toast.emit(f"{ch} · 已载入 {len(items[:MAX_DRAMAS])} 部剧")
+        self.warm_channels_async()
+
+    def _refresh_channel(self, ch):
+        """后台静默刷新缓存：只更新缓存，不动正在显示/播放的内容（下次切换生效）。"""
+        try:
+            self.ensure_service()
+            self._fetch_feed_shared(ch)
+            print(f"[sdk] {ch} 缓存已刷新（下次切换生效）", flush=True)
+        except Exception as e:
+            print(f"[sdk] {ch} 后台刷新失败: {e}", flush=True)
+
+    def warm_channels_async(self):
+        with self._lock:
+            if self._warming:
+                return
+            self._warming = True
+        threading.Thread(target=self._warm_channels, daemon=True).start()
+
+    def _warm_channels(self):
+        """后台把其余频道的 feed 预先拉好放进缓存，第一次切也能秒开。
+
+        2 路并行：太高的并发容易被上游限流，串行又要十几秒才轮完。
+        """
+        try:
+            todo = []
+            for ch in CHANNELS:
+                if ch == self._channel:
+                    continue
+                entry = self._feed_cache.get(ch)
+                if entry is not None and time.time() - entry.get("ts", 0) < FEED_TTL:
+                    continue
+                todo.append(ch)
+            if not todo:
+                return
+            q = Queue()
+            for ch in todo:
+                q.put(ch)
+
+            def worker():
+                while True:
+                    try:
+                        ch = q.get_nowait()
+                    except Empty:
+                        return
+                    try:
+                        self.ensure_service()
+                        items = self._fetch_feed_shared(ch)
+                        print(f"[sdk] 预热 {ch}: {len(items)} 部", flush=True)
+                    except Exception as e:
+                        print(f"[sdk] 预热 {ch} 失败: {e}", flush=True)
+
+            threads = [threading.Thread(target=worker, daemon=True)
+                       for _ in range(min(2, len(todo)))]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()      # 等这一轮全部结束再放开 _warming，否则会被重复触发
+        finally:
+            with self._lock:
+                self._warming = False
+
+    def _pick_recommend(self, dramas):
+        """首屏推荐：像推荐流一样每次启动换一部，先排除上次看过的那部。
+
+        feed 的顺序对同一台设备基本固定，所以「每次都是同一部」必须靠客户端轮换。
+        """
+        ids = [d["id"] for d in dramas]
+        if not ids:
+            return ""
+        try:
+            last = QSettings().value("feed/lastRecommend", "", type=str)
+        except Exception:
+            last = ""
+        pool = [i for i in ids if i != last] or ids
+        pick = random.choice(pool)
+        try:
+            QSettings().setValue("feed/lastRecommend", pick)
+        except Exception:
+            pass
+        return pick
+
+    def _fetch_episodes(self, sid):
+        """拿一部剧的可播分集并缓存（失败重试 3 次，避开匿名限流）。
+
+        同一部剧只拉一次：已在缓存里直接返回；另一个线程正在拉时返回已缓存的部分，
+        调用方用 _wait_episodes() 等它写完。
+        """
+        with self._lock:
+            if sid in self._episodes:
+                return self._episodes[sid]
+            if sid in self._fetching:
+                return None
+            self._fetching.add(sid)
+        try:
+            eps = []
+            for _ in range(3):
+                try:
+                    data = _api(f"/v1/episodes/{sid}")
+                    eps = [e for e in data.get("items", []) if e.get("playable")]
+                    break
+                except Exception:
+                    time.sleep(2)
+            return self._store_episodes(sid, eps[:EPISODES_PER_SERIES])
+        finally:
+            with self._lock:
+                self._fetching.discard(sid)
+
+    def _ensure_episodes(self, sid):
+        """搜索结果 / 首次进入 / 预载的剧：分集列表可能还没拉过"""
+        if sid not in self._episodes:
+            if self._fetch_episodes(sid) is None:
+                self._wait_episodes(sid)     # 另一个线程正在拉同一部，等它写完
+
+    def _wait_episodes(self, sid, timeout=25.0):
+        """等另一个线程把这部剧的分集拉完。"""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            with self._lock:
+                if sid in self._episodes:
+                    return self._episodes[sid]
+            time.sleep(0.1)
+        return []
+
+    def _store_episodes(self, sid, eps):
+        with self._lock:
+            self._episodes[sid] = [
+                {
+                    "id": e["id"],
+                    "number": e.get("number") or (j + 1),
+                    "label": e.get("title") or f"第{e.get('number', j + 1)}集",
+                    "duration": int(e.get("duration_seconds") or 0),
+                    "urls": {},          # _url_key(definition, strict) -> 播放地址（各清晰度地址不同，分别缓存）
+                    "resolving": set(),  # 正在解析的 _url_key
+                }
+                for j, e in enumerate(eps)
+            ]
+            # 搜索结果回来的 episode_count 可能为 0，拿到真实分集后补上，否则选集/连播无法翻页
+            for d in self._dramas:
+                if d["id"] == sid and not d["total"] and eps:
+                    d["total"] = len(eps)
+                    self.dramasChanged.emit()
+                    break
+            return self._episodes[sid]
+
+    # ---------- 搜索 ----------
+    @Slot(str)
+    def search(self, query):
+        query = (query or "").strip()
+        if not query:
+            self.searchResults.emit("", [])
+            return
+        threading.Thread(target=self._search, args=(query,), daemon=True).start()
+
+    def _search(self, query):
+        try:
+            data = _api("/v1/search?q=" + urllib.parse.quote(query), timeout=30, tries=2)
+        except Exception as e:
+            print(f"[sdk] search failed: {e}", flush=True)
+            self.toast.emit(f"搜索失败：{e}")
+            self.searchResults.emit(query, [])
+            return
+
+        items = []
+        seen = set()                 # 接口偶尔返回重复 id，同一部剧只留一行
+        known = {d["id"] for d in self._dramas}
+        with self._lock:
+            for s in data.get("items", []):
+                sid = s.get("id")
+                if not sid or not s.get("title") or sid in seen:
+                    continue
+                seen.add(sid)
+                drama = {
+                    "id": sid,
+                    "title": s.get("title", ""),
+                    "total": s.get("episode_count", 0),
+                    "covers": list(COVER_PAIRS[len(items) % len(COVER_PAIRS)]),
+                    "cover": "",              # 搜索结果不带封面地址，后台查 /v1/series 补
+                    "cover_url": s.get("cover_url", ""),
+                    "desc": s.get("description", ""),
+                }
+                items.append(drama)
+                # 并入剧单：MockData.drama(id) 才能解析到它，播放页直接可 open
+                if sid not in known:
+                    known.add(sid)
+                    self._dramas.append(drama)
+        print(f"[sdk] search {query!r}: {len(items)}", flush=True)
+        if items:
+            self.dramasChanged.emit()
+        self.searchResults.emit(query, items)
+        self._backfill_covers_async()
+
+    # ---------- 封面 ----------
+    def _backfill_covers_async(self, limit=None):
+        with self._lock:
+            if self._covering:
+                # 上一批还没跑完：记下来等它结束再补一轮。
+                # 不能直接丢弃 —— 搜索刚回来时启动那批通常还在跑，丢了搜索结果就没图了。
+                self._cover_again = True
+                return
+            self._covering = True
+        threading.Thread(target=self._backfill_covers, args=(limit,), daemon=True).start()
+
+    def _cover_urls_batch(self, ids):
+        """用 /v1/series-batch 一次拿多部剧的封面地址，返回 {id: cover_url}。
+
+        优先取「第一集的封面」：上游给的是 JPEG，能直接存下来用；
+        而 series 自己的 cover_url 是 HEIC，还得 ffmpeg 解一遍。
+        注意别把一次请求塞太多：后端逐部回源，11 部要 4 秒；拆成两批并发反而更慢
+        （后端会互相拖慢），实测单批 6 部约 1.8 秒最稳。
+        """
+        out = {}
+        if not ids:
+            return out
+        t0 = time.time()
+        try:
+            data = _api("/v1/series-batch?ids=" + ",".join(ids), timeout=30, tries=2, gap=0.8)
+        except Exception as e:
+            print(f"[sdk] series-batch 失败: {e}", flush=True)
+            return out
+        print(f"[sdk] series-batch {len(ids)} 部 {time.time() - t0:.2f}s", flush=True)
+        for item in (data or []):
+            if not isinstance(item, dict):
+                continue
+            s = item.get("series") or item
+            sid = str(s.get("id") or "")
+            if not sid:
+                continue
+            url = ""
+            eps = item.get("episodes") or []
+            if eps and isinstance(eps[0], dict):
+                url = eps[0].get("cover_url") or ""
+            if not url:
+                url = s.get("cover_url") or ""
+            if url:
+                out[sid] = url
+        return out
+
+    def _backfill_covers(self, limit=None):
+        """后台补真实封面，每拿到一张就发一次 dramasChanged，列表逐行出图。
+
+        剧单项自带 cover_url；搜索结果没有，用 /v1/series-batch 批量取。
+        转码是 CPU 密集操作，所以按 limit 控制单次数量（启动只补首屏那几张）。
+        """
+        try:
+            self._backfill_covers_inner(limit)
+        finally:
+            with self._lock:
+                self._covering = False
+                again = self._cover_again
+                self._cover_again = False
+            if again:
+                self._backfill_covers_async()     # 期间又有新剧要补（比如刚搜完）
+
+    def _backfill_covers_inner(self, limit=None):
+        with self._lock:
+            feed = set(self._feed_ids)
+            todo = [(d["id"], d.get("cover_url", "")) for d in self._dramas
+                    if not d.get("cover") and not d.get("cover_tried")]
+            # 用户正在看的（搜索结果 / 历史里的剧）优先出图，频道剧单的封面可以稍后
+            todo.sort(key=lambda job: 1 if job[0] in feed else 0)
+            if limit:
+                todo = todo[:limit]
+            taken = {did for did, _ in todo}
+            for d in self._dramas:
+                if d["id"] in taken:
+                    d["cover_tried"] = True
+        if not todo:
+            return
+
+        # 只有「没有 cover_url」的才需要查地址（搜索结果就是这种）。
+        # 频道剧单自带的是 HEIC，但能直接转码，没必要为它多查一次 batch ——
+        # 实测把 11 部塞进一次 batch 要 4 秒，只查搜索结果 6 部 1.5 秒左右。
+        need_batch = [did for did, url in todo if not url]
+        if need_batch:
+            batch = self._cover_urls_batch(need_batch)
+            todo = [(did, batch.get(did) or url) for did, url in todo]
+
+        def one(job):
+            did, url = job
+            if not url:
+                return (did, "", "no cover_url")
+            cover = _cover_file(did, url)
+            return (did, cover, "" if cover else "transcode failed")
+
+        q = Queue()
+        for job in todo:
+            q.put(job)
+
+        def worker():
+            while True:
+                try:
+                    job = q.get_nowait()
+                except Empty:
+                    return
+                res = one(job)
+                if not res:
+                    continue
+                did, cover, err = res
+                with self._lock:
+                    for d in self._dramas:
+                        if d["id"] == did:
+                            if cover:
+                                d["cover"] = cover
+                            else:
+                                d["cover_error"] = err    # 服务端拒绝时不重试，界面用占位渐变
+                            break
+                if cover:
+                    self.dramasChanged.emit()
+                    print(f"[sdk] cover ready {did}", flush=True)
+
+        for _ in range(min(COVER_WORKERS, len(todo))):
+            threading.Thread(target=worker, daemon=True).start()
+
+    # ---------- 播放地址 ----------
+    @Slot(str, int, str, bool, bool)
+    def prepare(self, drama_id, episode, definition, strict, seekable):
+        threading.Thread(target=self._prepare, args=(drama_id, episode, definition, strict, seekable),
+                         daemon=True).start()
+
+    def _prepare(self, drama_id, episode, definition, strict=False, seekable=False):
+        """seekable：要从中途起播（续播 / 换清晰度）。没落盘的集是实时流、不能 seek，只能从头播，
+        所以先等 SDK 落盘（3–8 秒）再给地址。换清晰度（strict）总是需要。"""
+        need_cache = strict or seekable
+        print(f"[sdk] prepare {drama_id} ep={episode} def={definition or QUALITY}"
+              f"{' strict' if strict else ''}{' seekable' if need_cache else ''}", flush=True)
+        self._current_drama = drama_id      # 切频道时记进 _channel_last，切回来直接回到这部
+        # 调试用：HG_LOCAL_MP4 指向本地文件时跳过网络，直接播本地（验证渲染性能）
+        import os
+        local = os.environ.get("HG_LOCAL_MP4")
+        if local:
+            print(f"[sdk] 本地文件模式: {local}", flush=True)
+            self.episodeReady.emit(drama_id, episode, local, definition)
+            return
+        self._ensure_episodes(drama_id)
+        with self._lock:
+            eps = self._episodes.get(drama_id)
+            if not eps or not (0 <= episode < len(eps)):
+                print(f"[sdk] no episode: have={len(eps) if eps else 0}", flush=True)
+                self.episodeFailed.emit(drama_id, episode, "剧集不存在", definition)
+                return
+            ep = eps[episode]
+            key = _url_key(definition, strict)
+            url = ep["urls"].get(key)
+            if url and not need_cache:
+                self.episodeReady.emit(drama_id, episode, url, definition)
+                return
+            rkey = key + ("@seek" if need_cache else "")
+            if rkey in ep["resolving"]:
+                return                  # 同一请求正在解析，解析完会发 episodeReady
+            ep["resolving"].add(rkey)
+            eid = ep["id"]
+
+        duration = 0
+        try:
+            cached = False              # 地址是之前解析的：是否已落盘不知道，交给 _wait_cached 查（已落盘时立即返回）
+            if not url:
+                # 本地 SDK 默认缓存优先：这一集落过盘就返回缓存的那一档，不管请求的是哪档；
+                # strict=1 时只认请求的这一档，没缓存就向上游解析（换清晰度必须用它）
+                info = _api(f"/v1/play/{eid}?definition={definition or QUALITY}"
+                            f"{'&strict=1' if strict else ''}", timeout=45)
+                url = info.get("stream_url")
+                duration = int(info.get("duration_seconds") or 0)
+                cached = bool(info.get("cached"))
+            if need_cache and url and not cached:
+                _wait_cached(eid, _url_definition(url, definition or QUALITY))
+        except AnonLimited:
+            # 上游对匿名设备关了数据通道：只有已经缓存的集还能播
+            print("[sdk] 匿名额度用尽：无法解析新的播放地址", flush=True)
+            with self._lock:
+                ep["resolving"].discard(rkey)
+            self.episodeFailed.emit(drama_id, episode,
+                                    "上游暂时限制了匿名访问，换一部已缓存的剧或稍后再试", definition)
+            return
+        except Exception as e:
+            print(f"[sdk] play failed: {e}", flush=True)
+            with self._lock:
+                ep["resolving"].discard(rkey)
+            self.episodeFailed.emit(drama_id, episode, str(e), definition)
+            return
+
+        with self._lock:
+            ep["resolving"].discard(rkey)
+            if url:
+                ep["urls"][key] = url
+            if duration:
+                ep["duration"] = duration
+        if not url:
+            self.episodeFailed.emit(drama_id, episode, "没有拿到播放地址", definition)
+            return
+        print(f"[sdk] url ok ep={episode} {url[:60]}", flush=True)
+        self.episodeReady.emit(drama_id, episode, url, definition)
+
+    # ---------- 预取 / 预载 ----------
+    @Slot(list, str)
+    def preload(self, items, definition):
+        """预载往后要看的几个节目（播放页给出顺序：越近越前，见 8.3 节）。
+
+        逐个落盘而不是同时开跑：几个一起下会互相抢带宽，最近的那个反而最晚好。
+        每次调用替换还没开始的排队项（用户换了位置，旧的顺序就不对了）；正在落盘的那个跑完为止。
+        items: [[dramaId, ep], ...]
+        """
+        queue = []
+        with self._lock:
+            for it in items or []:
+                key = (str(it[0]), int(it[1]), definition)
+                if key not in self._prefetched and key not in queue:
+                    queue.append(key)
+            self._preload_queue = queue
+            if not queue or self._preloading:
+                return
+            self._preloading = True
+        threading.Thread(target=self._preload_worker, name="preload", daemon=True).start()
+
+    def _preload_worker(self):
+        while True:
+            with self._lock:
+                key = None
+                while self._preload_queue:
+                    k = self._preload_queue.pop(0)
+                    if k not in self._prefetched:
+                        key = k
+                        break
+                if key is None:
+                    self._preloading = False
+                    return
+                self._prefetched.add(key)
+            if not self._prefetch(*key, wait=True):
+                with self._lock:              # 上游拒绝：后面的也不会成功，别再打
+                    self._preload_queue = []
+                    self._preloading = False
+                return
+
+    @Slot(str, int, str)
+    def prefetch(self, drama_id, episode, definition):
+        """提前准备某一集（解析地址 + 让服务端落盘），本集临近结尾时由播放页调用。"""
+        key = (drama_id, episode, definition)
+        with self._lock:
+            eps = self._episodes.get(drama_id) or []
+            if not (0 <= episode < len(eps)):
+                return                     # 没有这一集（本剧最后一集）
+            if key in self._prefetched:
+                return                     # 已经在解析 / 已解析好
+            self._prefetched.add(key)
+        threading.Thread(target=self._prefetch, args=(drama_id, episode, definition),
+                         daemon=True).start()
+
+    def _prefetch(self, drama_id, episode, definition, wait=False):
+        """提前准备某一集：解析播放地址 + 让服务端落盘（prewarm）。返回 False 表示上游拒绝。
+
+        wait：等落盘真正完成再返回。SDK 的 prewarm 是立即返回 202、后台落盘的，
+        预载不等的话几集会同时下载，和正在看的那一集抢带宽（它要落盘了才能 seek）。
+
+        落盘后切集时 ohgd 直接读本地 mp4，秒开（也能 seek）；不落盘就要等实时转封装。
+        服务端落盘 3–8 秒、约 6MB，所以必须提前（见 8.3 节）。
+        """
+        key = (drama_id, episode, definition)
+        q = definition or QUALITY
+        try:
+            self._ensure_episodes(drama_id)   # 预载的可能是还没打开过的剧
+            with self._lock:
+                eps = self._episodes.get(drama_id) or []
+                if not (0 <= episode < len(eps)):
+                    return True
+                ep = eps[episode]
+            eid = ep["id"]
+
+            # 1) 先解析地址（缓存里还没有时），拿到就能播
+            if not ep["urls"].get(_url_key(definition, False)):
+                info = _api(f"/v1/play/{eid}?definition={q}", timeout=45)
+                with self._lock:
+                    if info.get("stream_url"):
+                        ep["urls"][_url_key(definition, False)] = info["stream_url"]
+                    d = int(info.get("duration_seconds") or 0)
+                    if d:
+                        ep["duration"] = d
+
+            # 2) 让服务端落盘：已落盘时立即返回 ready，重复调用很便宜
+            _api(f"/v1/cache/prewarm/{eid}?definition={q}", timeout=180, tries=1)
+            if wait:
+                _wait_cached(eid, q, timeout=90)
+            print(f"[sdk] 预取就绪 {drama_id} ep={episode}", flush=True)
+            return True
+        except AnonLimited:
+            print("[sdk] 上游拒绝（额度/签名），跳过预取", flush=True)
+            return False
+        except Exception as e:
+            # 失败清除标记，下次预载 / 临近结尾时会再试
+            with self._lock:
+                self._prefetched.discard(key)
+            print(f"[sdk] 预取未完成 {drama_id} ep={episode}: {e}", flush=True)
+            return True
+
+    @Slot(str, int, result=int)
+    def durationOf(self, drama_id, episode):
+        with self._lock:
+            eps = self._episodes.get(drama_id) or []
+            if 0 <= episode < len(eps):
+                return eps[episode]["duration"]
+        return 0
+
+    @Slot(str, int, result=str)
+    def episodeLabel(self, drama_id, episode):
+        with self._lock:
+            eps = self._episodes.get(drama_id) or []
+            if 0 <= episode < len(eps):
+                return eps[episode]["label"]
+        return f"第{episode + 1}集"
