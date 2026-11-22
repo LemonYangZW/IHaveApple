@@ -18,12 +18,11 @@
 | 目录 | 内容 |
 |---|---|
 | `IHaveApple.exe`、`_internal/` | 播放器（含 libmpv） |
-| `hgd/` | 片源服务 `ohgd.exe` 和它的 `config.json`，播放器启动时自动拉起 |
+| `hgd/` | 片源服务 `ohgd.exe` 和它的 `config.json`，播放器启动时自动拉起；签名已内置 |
 | `ffmpeg/` | `ohgd` 转封装、播放器转封面用的 ffmpeg |
 
-**片源服务还依赖一个签名服务**：`ohgd` 的播放接口需要真实签名，默认连 `http://127.0.0.1:19830`（见 `hgd/config.json` 的 `signer_url`）。
-签名服务是 [openhongguo](https://github.com/beilunyang/openhongguo) 里的 `signer/`（Java 21），压缩包里不带，需要自行构建运行。
-没有签名服务时可以打开界面、浏览剧单，但拿不到播放地址。
+签名已经编译在 `ohgd` 里，解压后直接运行即可播放，不需要安装 Java，也不需要单独启动签名服务。
+如果以后内置签名失效，可以在 `hgd/config.json` 把 `signer_url` 指向 [openhongguo](https://github.com/beilunyang/openhongguo) 的 `signer/`（Java 21）改用外部签名；留空则使用内置实现。
 
 ## 开发
 
@@ -40,6 +39,7 @@ python prototype/main.py
 ## 打包与发布
 
 推送 `v*` 标签会触发 GitHub Actions（[.github/workflows/release.yml](.github/workflows/release.yml)）：下载 libmpv 和 ffmpeg，编译 `ohgd`，用 PyInstaller 打包播放器，把 zip 发布到对应的 Release。
+打包脚本会校验 `hgd/config.json` 的 `signer_url` 为空，确保发行包使用 `ohgd` 内置签名、不依赖外部服务。
 
 本地打包：
 

@@ -28,6 +28,10 @@ jobs:
           go-version-file: sdk/hgd/go.mod
           cache: false
 
+      - name: 测试内置签名
+        working-directory: sdk/openhongguo
+        run: go test ./internal/protocol/sign ./sdk/model
+
       - name: 安装 Python 依赖
         run: pip install -r prototype/requirements.txt pyinstaller
 
@@ -52,6 +56,13 @@ jobs:
         with:
           name: IHaveApple-win64
           path: dist/*.zip
+
+      - name: 验证发行包使用内置签名
+        shell: pwsh
+        run: |
+          $cfg = Get-Content dist/IHaveApple/hgd/config.json -Raw | ConvertFrom-Json
+          if ($cfg.signer_url) { throw "发行包不应依赖外部签名服务：signer_url=$($cfg.signer_url)" }
+          if (-not (Test-Path dist/IHaveApple/hgd/ohgd.exe)) { throw "发行包缺少 hgd/ohgd.exe" }
 
       - name: 发布到 Release
         if: github.ref_type == 'tag'

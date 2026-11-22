@@ -37,6 +37,10 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "go build 失败" }
 } finally { Pop-Location }
 Copy-Item (Join-Path $Root "sdk/hgd/config.example.json") (Join-Path $Hgd "config.json")
+$Cfg = Get-Content (Join-Path $Hgd "config.json") -Raw | ConvertFrom-Json
+if ($Cfg.signer_url) {
+    throw "打包版必须使用内置签名：请把 sdk/hgd/config.example.json 的 signer_url 留空（当前为 $($Cfg.signer_url)）"
+}
 
 Write-Host "== 3/3 汇总 =="
 $FfDir = Join-Path $Out "ffmpeg"

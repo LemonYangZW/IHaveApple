@@ -1,11 +1,11 @@
-IHaveApple 第一个版本：沉浸式竖屏短剧播放器（Windows x64）。
+IHaveApple 沉浸式竖屏短剧播放器（Windows x64）。
 
 ## 使用
 
 1. 下载 `IHaveApple-<版本>-win64.zip`，解压到任意目录
 2. 运行 `IHaveApple.exe`，播放器会自动拉起 `hgd/ohgd.exe` 片源服务
 
-播放需要另外运行签名服务（默认 `http://127.0.0.1:19830`，见 `hgd/config.json`），说明见压缩包里的 README.md。
+签名已内置在 `ohgd` 中，解压后直接可用，不需要安装 Java 或单独启动签名服务。
 
 ## 功能
 
