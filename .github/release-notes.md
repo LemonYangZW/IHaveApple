@@ -2,13 +2,14 @@ IHaveApple 沉浸式竖屏短剧播放器（Windows x64）。
 
 ## 使用
 
-1. 下载 `IHaveApple-<版本>-win64.zip`，解压到任意目录
-2. 运行 `IHaveApple.exe`，播放器会自动拉起 `hgd/ohgd.exe` 片源服务
+1. 下载 `IHaveApple-Setup-<版本>-win64.exe`，运行安装向导，安装目录可以自己选
+2. 安装完成后启动 IHaveApple，播放器会自动拉起安装目录里的 `hgd/ohgd.exe` 片源服务
 
-签名已内置在 `ohgd` 中，解压后直接可用，不需要安装 Java 或单独启动签名服务。
+签名已内置在 `ohgd` 中，安装后直接可用，不需要安装 Java 或单独启动签名服务；卸载走 Windows 的「设置 → 应用」。
 
 ## 更新
 
+- v0.1.3：Windows 版改为安装包发布，安装时可以指定目录，卸载后不留运行缓存
 - v0.1.2：跟随上游播放接口变更（`/novel/player/multi_video_model/v1/`），修复起播失败；修复错误遮罩与「全剧终」页上鼠标光标不可见；`ohgd` 支持 `--pad` 平板身份
 
 ## 功能

@@ -44,18 +44,43 @@ jobs:
           gh release download latest -R BtbN/FFmpeg-Builds -p $env:FFMPEG_ASSET -D deps
           Expand-Archive "deps/$env:FFMPEG_ASSET" deps/ffmpeg
 
+      - name: 准备 Inno Setup
+        shell: pwsh
+        run: |
+          function Find-Iscc {
+            $cmd = Get-Command iscc -ErrorAction SilentlyContinue
+            if ($cmd) { return $cmd.Source }
+            $x86 = [Environment]::GetFolderPath("ProgramFilesX86")
+            $candidates = @(
+              (Join-Path $x86 "Inno Setup 7\ISCC.exe"),
+              (Join-Path $env:ProgramFiles "Inno Setup 7\ISCC.exe"),
+              (Join-Path $x86 "Inno Setup 6\ISCC.exe"),
+              (Join-Path $env:ProgramFiles "Inno Setup 6\ISCC.exe")
+            )
+            foreach ($p in $candidates) { if ($p -and (Test-Path $p)) { return $p } }
+          }
+          $iscc = Find-Iscc
+          if (-not $iscc) {
+            Write-Host "环境里没有 Inno Setup，安装最新版"
+            choco install innosetup -y --no-progress
+            $iscc = Find-Iscc
+          }
+          if (-not $iscc) { throw "找不到 ISCC.exe" }
+          "ISCC=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "ISCC：$iscc"
+
       - name: 打包
         shell: pwsh
         run: |
           $ver = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { "dev-$($env:GITHUB_SHA.Substring(0, 7))" }
           $mpv = (Get-ChildItem deps/mpv -Recurse -Filter libmpv-2.dll | Select-Object -First 1).FullName
           $ff  = (Get-ChildItem deps/ffmpeg -Recurse -Filter ffmpeg.exe | Select-Object -First 1).FullName
-          ./scripts/build-windows.ps1 -Version $ver -Mpv $mpv -Ffmpeg $ff
+          ./scripts/build-windows.ps1 -Version $ver -Mpv $mpv -Ffmpeg $ff -Iscc $env:ISCC
 
       - uses: actions/upload-artifact@v7
         with:
           name: IHaveApple-win64
-          path: dist/*.zip
+          path: dist/*.exe
 
       - name: 验证发行包使用内置签名
         shell: pwsh
@@ -63,15 +88,16 @@ jobs:
           $cfg = Get-Content dist/IHaveApple/hgd/config.json -Raw | ConvertFrom-Json
           if ($cfg.signer_url) { throw "发行包不应依赖外部签名服务：signer_url=$($cfg.signer_url)" }
           if (-not (Test-Path dist/IHaveApple/hgd/ohgd.exe)) { throw "发行包缺少 hgd/ohgd.exe" }
+          if (-not (Get-Item dist/IHaveApple-Setup-*.exe)) { throw "发行包缺少安装包" }
 
       - name: 发布到 Release
         if: github.ref_type == 'tag'
         shell: pwsh
         run: |
           $tag = $env:GITHUB_REF_NAME
-          $zip = (Get-Item dist/*.zip).FullName
+          $setup = (Get-Item dist/IHaveApple-Setup-*.exe).FullName
           gh release view $tag *> $null
           if ($LASTEXITCODE -ne 0) {
             gh release create $tag --title "IHaveApple $tag" --notes-file .github/release-notes.md
           }
-          gh release upload $tag $zip --clobber
+          gh release upload $tag $setup --clobber
