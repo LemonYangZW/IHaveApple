@@ -9,7 +9,7 @@ IHaveApple 沉浸式竖屏短剧播放器（Windows x64）。
 
 ## 更新
 
-- v0.1.1：跟随上游播放接口变更（`/novel/player/multi_video_model/v1/`），修复起播失败；修复错误遮罩与「全剧终」页上鼠标光标不可见；`ohgd` 支持 `--pad` 平板身份
+- v0.1.2：跟随上游播放接口变更（`/novel/player/multi_video_model/v1/`），修复起播失败；修复错误遮罩与「全剧终」页上鼠标光标不可见；`ohgd` 支持 `--pad` 平板身份
 
 ## 功能
 
