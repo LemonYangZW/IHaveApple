@@ -288,6 +288,49 @@ Item {
 
             // ---------- 关于 ----------
             SectionTitle { text: "关于" }
+            Item {
+                width: parent.width
+                height: 56
+                Column {
+                    anchors.left: parent.left
+                    anchors.right: updateButton.left
+                    anchors.rightMargin: Theme.space.md
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 2
+                    Label { width: parent.width; role: Theme.type.body; text: "当前版本 " + Updater.version }
+                    Label {
+                        width: parent.width
+                        role: Theme.type.caption
+                        color: Theme.color.aside
+                        text: !Updater.canCheck ? "开发版不检查更新"
+                            : Updater.state === "available" ? "有新版本 " + Updater.latestVersion
+                            : Updater.state === "latest" ? "已是最新版本"
+                            : "从 GitHub Release 获取更新"
+                    }
+                }
+                IhaButton {
+                    id: updateButton
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: Updater.state === "checking" ? "检查中…" : "检查更新"
+                    enabled: Updater.canCheck && Updater.state !== "checking"
+                             && Updater.state !== "downloading" && Updater.state !== "installing"
+                    onClicked: Updater.check(true, Store.prefs.updateChannel)
+                }
+            }
+            ChoiceRow {
+                title: "更新渠道"
+                note: "GitHub 连不上或下载太慢时，可以换成镜像"
+                options: [{ value: "official", text: "GitHub 官方" }, { value: "ghfast", text: "ghfast.top 镜像" }]
+                value: Store.prefs.updateChannel
+                onPicked: v => Store.prefs.updateChannel = v
+            }
+            ToggleRow {
+                title: "启动时自动检查更新"
+                note: "有新版本时提示是否下载，确认后自动更新到最新版本"
+                checked: Store.prefs.autoCheckUpdate
+                onClicked: Store.prefs.autoCheckUpdate = !Store.prefs.autoCheckUpdate
+            }
             Label {
                 width: parent.width
                 role: Theme.type.caption

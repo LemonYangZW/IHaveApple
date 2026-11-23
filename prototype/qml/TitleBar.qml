@@ -19,6 +19,8 @@ Item {
 
     Rectangle {
         anchors.fill: parent
+        // 整页面板打开时下面已经是实色底，不需要再压暗，免得顶部多出一道深色带
+        visible: bar.panel === ""
         gradient: Gradient {
             GradientStop { position: 0.0; color: Theme.color.stage60 }
             GradientStop { position: 1.0; color: "transparent" }

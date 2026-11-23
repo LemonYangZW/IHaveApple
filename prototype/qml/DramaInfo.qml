@@ -12,6 +12,7 @@ Item {
     property int total: 0
     property bool inDramaView: false   // 已在全剧界面：入口按钮隐藏
     property bool shown: true          // 跟随控件显隐：空闲时和控件一起淡出
+    property int fadeBelow: 0          // 信息区下沿到画面底部的距离：渐变一直铺到底，和控件栏连成一片
     signal showAll()
 
     readonly property string title: drama ? drama.title : ""
@@ -31,7 +32,8 @@ Item {
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.bottom: parent.bottom
-        height: info.height + Theme.layout.controlsBar
+        anchors.bottomMargin: -info.fadeBelow
+        height: info.height + Theme.layout.controlsBar + info.fadeBelow
         gradient: Gradient {
             GradientStop { position: 0.0; color: "transparent" }
             GradientStop { position: 1.0; color: Theme.color.stage60 }

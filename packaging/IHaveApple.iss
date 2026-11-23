@@ -64,6 +64,14 @@ Name: "{autodesktop}\IHaveApple"; Filename: "{app}\IHaveApple.exe"; WorkingDir: 
 
 [Run]
 Filename: "{app}\IHaveApple.exe"; Description: "{cm:LaunchProgram,IHaveApple}"; Flags: nowait postinstall skipifsilent
+; 播放器内「下载并更新」会带 /SILENT /relaunch=1 运行安装包，装完自动重新打开播放器
+Filename: "{app}\IHaveApple.exe"; Flags: nowait; Check: RelaunchAfterUpdate
+
+[Code]
+function RelaunchAfterUpdate: Boolean;
+begin
+  Result := ExpandConstant('{param:relaunch|0}') = '1';
+end;
 
 [UninstallDelete]
 ; 默认缓存目录（设置页换到别处时，用户自己的目录不删）

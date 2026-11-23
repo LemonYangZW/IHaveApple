@@ -51,17 +51,23 @@ function Find-Iscc([string]$Hint) {
 if (Test-Path $Dist) { Remove-Item $Dist -Recurse -Force }
 
 Write-Host "== 1/4 PyInstaller 打包播放器 =="
+# 版本号写进包里，播放器据此检查更新（prototype/updater.py 读 version.txt）
+$Build = Join-Path $Root "build"
+New-Item -ItemType Directory -Force $Build | Out-Null
+$VersionFile = Join-Path $Build "version.txt"
+[IO.File]::WriteAllText($VersionFile, $Version)
 # --specpath 设在 build/ 下，--add-data 一律用绝对路径
 $PyArgs = @(
     "-m", "PyInstaller", "--noconfirm", "--windowed", "--name", "IHaveApple",
     "--icon", (Join-Path $Root "packaging/app.ico"),
     "--distpath", $Dist,
-    "--workpath", (Join-Path $Root "build"),
-    "--specpath", (Join-Path $Root "build"),
+    "--workpath", $Build,
+    "--specpath", $Build,
     "--add-data", "$Proto/qml;qml",
     "--add-data", "$Proto/fonts;fonts",
     "--add-data", "$Proto/assets;assets",
     "--add-data", "$Mpv;lib",
+    "--add-data", "$VersionFile;.",
     (Join-Path $Proto "main.py")
 )
 python @PyArgs

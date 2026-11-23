@@ -27,6 +27,9 @@ QtObject {
         property string wheelAction: "episode" // episode：切换短剧 | volume：调节音量
         property int controlsIdle: 2500        // 控件自动隐藏延迟（毫秒）
         property int prefetchLead: 20          // 本集剩余多少秒时确认下一集已预取（服务端落盘要 3–8 秒）
+        // 更新
+        property bool autoCheckUpdate: true    // 启动后检查 GitHub 上有没有新版本
+        property string updateChannel: "official" // 更新渠道：official 直连 GitHub | ghfast 走 ghfast.top 镜像（键见 updater.py 的 MIRRORS）
         // 快捷键：只保存与默认值不同的项（JSON：action -> 按键序列，"" 表示未设置）
         property string shortcutsJson: "{}"
     }

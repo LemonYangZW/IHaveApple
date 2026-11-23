@@ -25,6 +25,7 @@ from hgservice import HgService
 from mpv_player import MpvPlayer
 from video_item import VideoItem, bind_player
 from native_window import install_aspect_resize
+from updater import Updater
 
 ROOT = Path(__file__).resolve().parent
 FONTS = [
@@ -128,10 +129,13 @@ def main() -> int:
     backend = HgService()
     app._player = player      # 持有引用，避免被回收
     app._backend = backend
+    updater = Updater()
+    app._updater = updater
     bind_player(player)
     qmlRegisterType(VideoItem, "IHaveApple", 1, 0, "VideoItem")
     qmlRegisterSingletonType(MpvPlayer, "IHaveApple", 1, 0, "Player", lambda _e: player)
     qmlRegisterSingletonType(HgService, "IHaveApple", 1, 0, "Backend", lambda _e: backend)
+    qmlRegisterSingletonType(Updater, "IHaveApple", 1, 0, "Updater", lambda _e: updater)
 
     engine = QQmlApplicationEngine()
 

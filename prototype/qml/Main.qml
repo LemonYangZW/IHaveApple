@@ -207,7 +207,7 @@ ApplicationWindow {
         aspect: win.windowAspect
         fitVideo: win.fitToVideo
         // 输入剧名、打开设置页时不触发播放快捷键
-        keysEnabled: library.mode !== "search" && !settings.open
+        keysEnabled: library.mode !== "search" && !settings.open && !updateDialog.open
         onImmersiveRequested: on => win.setImmersive(on)
         onFitVideoRequested: win.toggleFitToVideo()
         // 选集面板、搜索 / 历史面板、设置页互斥
@@ -216,6 +216,18 @@ ApplicationWindow {
 
     // 搜索 / 观看历史整页打开时暂停播放，关闭后恢复
     property bool pausedByLibrary: false
+
+    // 整页面板（设置、搜索 / 历史）从频道 tab 下方开始；标题栏和频道 tab 本身是透明叠层，
+    // 面板打开时在它们下面铺上和面板同色的底，别让画面从顶部透出来
+    Rectangle {
+        anchors.left: parent.left
+        anchors.right: parent.right
+        height: library.y
+        color: Theme.color.wing
+        opacity: settings.open || library.open ? 1 : 0
+        visible: opacity > 0 && !win.immersive
+        Behavior on opacity { NumberAnimation { duration: Theme.reducedMotion ? 0 : Theme.motion.base } }
+    }
 
     // ---------- 叠加层 ----------
     TitleBar {
@@ -361,10 +373,41 @@ ApplicationWindow {
         sequence: "Esc"
         enabled: !demo.opened
         onActivated: {
-            if (player.menuOpen) player.handleEscape()
+            if (updateDialog.open) updateDialog.close()
+            else if (player.menuOpen) player.handleEscape()
             else if (settings.open) settings.close()
             else if (library.open) library.close()
             else player.handleEscape()
+        }
+    }
+
+    // 更新提示：盖住整个窗口（含标题栏），视频在下面继续播放
+    UpdateDialog {
+        id: updateDialog
+        anchors.fill: parent
+        z: 90
+        // 点过「稍后」的版本，本次运行内定时检查不再打扰；手动检查或出了更新的版本照常提示
+        property string dismissed: ""
+        onOpenChanged: if (!open) dismissed = Updater.latestVersion
+    }
+    Connections {
+        target: Updater
+        function onUpdateAvailable(manual) {
+            if (manual || Updater.latestVersion !== updateDialog.dismissed) updateDialog.show()
+        }
+        function onToast(message) { Store.toast(message) }
+        // 安装包已启动：退出播放器，把文件让给安装程序覆盖
+        function onQuitRequested() { win.quitApp() }
+    }
+    // 启动后稍等再查（别和首屏拉剧单抢网络），之后每 6 小时查一次：
+    // 播放器常常最小化到托盘一开好几天，只在启动时查会错过新版本
+    Timer {
+        interval: 5000
+        repeat: true
+        running: !win.shotMode && Store.prefs.autoCheckUpdate && Updater.canCheck
+        onTriggered: {
+            interval = 6 * 3600 * 1000
+            Updater.check(false, Store.prefs.updateChannel)
         }
     }
 

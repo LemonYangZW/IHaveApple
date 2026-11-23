@@ -546,7 +546,11 @@ Rectangle {
         shown: stage.controlsShown
         anchors.left: parent.left
         anchors.right: parent.right
-        anchors.bottom: controls.top
+        // 紧贴进度条上方：控件层高 96，但进度条 + 按钮只占底部 controlsBar，
+        // 贴着控件层顶部会空出一截，看起来和控件栏脱节
+        anchors.bottom: controls.bottom
+        anchors.bottomMargin: fadeBelow
+        fadeBelow: Theme.layout.controlsBar + Theme.space.xs
         drama: stage.drama
         episode: stage.episode + 1
         total: stage.drama ? stage.drama.total : 0
