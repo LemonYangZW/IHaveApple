@@ -16,7 +16,7 @@ app.setOrganizationName("IHaveApple")
 app.setApplicationName("IHaveApple-coverprobe")
 
 import hgservice                                              # noqa: E402
-from hgservice import HgService, COVER_DIR                    # noqa: E402
+from hgservice import HgService, cover_cache_dir                    # noqa: E402
 
 svc = HgService()
 svc.ensure_service()
@@ -34,7 +34,7 @@ QUERY = "死考"
 with svc._lock:
     ids = [d["id"] for d in svc._dramas[feed_len:]]
 for did in ids:
-    pth = os.path.join(COVER_DIR, f"{did}.jpg")
+    pth = os.path.join(cover_cache_dir(), f"{did}.jpg")
     if os.path.exists(pth):
         os.remove(pth)
 

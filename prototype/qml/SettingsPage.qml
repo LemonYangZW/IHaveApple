@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Templates as T
+import IHaveApple 1.0
 
 // 设置页：盖在画面上（标题栏下方到窗口底部），视频在下面继续播放。
 // 所有设置即时生效并持久保存（Store.prefs），没有「保存」按钮。
@@ -8,7 +9,12 @@ Item {
 
     property bool open: false
     property bool trayAvailable: true
-    function show() { open = true; flick.contentY = 0; recorder.cancel() }
+    function show() {
+        open = true
+        flick.contentY = 0
+        recorder.cancel()
+        Backend.refreshCacheSize()
+    }
     function close() { open = false; recorder.cancel() }
     function toggle() { open ? close() : show() }
 
@@ -185,6 +191,72 @@ Item {
                     action: modelData.key
                     title: modelData.name
                 }
+            }
+
+            // ---------- 缓存 ----------
+            SectionTitle { text: "缓存" }
+            Item {
+                width: parent.width
+                height: Math.max(56, dirTexts.implicitHeight + Theme.space.sm * 2)
+                Column {
+                    id: dirTexts
+                    anchors.left: parent.left
+                    anchors.right: dirButton.left
+                    anchors.rightMargin: Theme.space.md
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 2
+                    Label { width: parent.width; role: Theme.type.body; text: "缓存目录" }
+                    Label {
+                        width: parent.width
+                        role: Theme.type.caption
+                        color: Theme.color.aside
+                        wrapMode: Text.WordWrap
+                        text: Backend.cacheDir
+                    }
+                }
+                IhaButton {
+                    id: dirButton
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "更改"
+                    enabled: !Backend.cacheBusy
+                    onClicked: Backend.chooseCacheDir()
+                }
+            }
+            Item {
+                width: parent.width
+                height: 56
+                Column {
+                    anchors.left: parent.left
+                    anchors.right: clearCacheButton.left
+                    anchors.rightMargin: Theme.space.md
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 2
+                    Label { width: parent.width; role: Theme.type.body; text: "缓存占用" }
+                    Label { width: parent.width; role: Theme.type.caption; color: Theme.color.aside; text: Backend.cacheSizeText }
+                }
+                IhaButton {
+                    id: clearCacheButton
+                    property bool confirming: false
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: Backend.cacheBusy ? "清理中…" : confirming ? "确认清理" : "清理"
+                    enabled: !Backend.cacheBusy
+                    onClicked: {
+                        if (!confirming) { confirming = true; cacheConfirm.restart(); return }
+                        confirming = false
+                        Backend.clearCache()
+                    }
+                    inkColor: confirming ? Theme.color.danger : Theme.color.subtitle
+                    Timer { id: cacheConfirm; interval: 3000; onTriggered: clearCacheButton.confirming = false }
+                }
+            }
+            Label {
+                width: parent.width
+                role: Theme.type.caption
+                color: Theme.color.aside
+                wrapMode: Text.WordWrap
+                text: "封面、推荐列表和视频缓存都放在这个目录；换目录后旧文件不会自动搬走。清理会重启片源服务，正在播放的视频会中断。"
             }
 
             // ---------- 数据 ----------

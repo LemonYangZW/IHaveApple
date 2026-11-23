@@ -25,6 +25,8 @@
 签名已经编译在 `ohgd` 里，安装后直接运行即可播放，不需要安装 Java，也不需要单独启动签名服务。
 如果以后内置签名失效，可以在 `hgd/config.json` 把 `signer_url` 指向 [openhongguo](https://github.com/beilunyang/openhongguo) 的 `signer/`（Java 21）改用外部签名；留空则使用内置实现。
 
+封面、推荐列表和视频缓存默认放在 `%LOCALAPPDATA%\IHaveApple\cache`，设置页「缓存」里可以换目录、查看占用和一键清理。换目录只是改新缓存的落点，旧目录里的文件不会自动搬走或删除。
+
 ## 开发
 
 ```powershell

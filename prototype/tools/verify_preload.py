@@ -36,7 +36,7 @@ def check(cond, label, detail=""):
         FAILED.append(label)
 
 
-from hgservice import SDK_CACHE, HgService             # noqa: E402
+from hgservice import HgService, video_cache_dir             # noqa: E402
 from mpv_player import MpvPlayer                       # noqa: E402
 from video_item import VideoItem, bind_player          # noqa: E402
 
@@ -94,7 +94,7 @@ def eid_of(drama, ep):
 
 def is_cached(drama, ep):
     eid = eid_of(drama, ep)
-    return bool(eid) and any(f.startswith(eid + "_") for f in os.listdir(SDK_CACHE))
+    return bool(eid) and any(f.startswith(eid + "_") for f in os.listdir(video_cache_dir()))
 
 
 def expected_feed(n=5):

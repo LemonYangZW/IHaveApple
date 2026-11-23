@@ -66,6 +66,8 @@ Name: "{autodesktop}\IHaveApple"; Filename: "{app}\IHaveApple.exe"; WorkingDir: 
 Filename: "{app}\IHaveApple.exe"; Description: "{cm:LaunchProgram,IHaveApple}"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
+; 默认缓存目录（设置页换到别处时，用户自己的目录不删）
+Type: filesandordirs; Name: "{localappdata}\IHaveApple\cache"
 Type: filesandordirs; Name: "{app}\_internal\.cache"
 Type: filesandordirs; Name: "{app}\.cache"
 Type: filesandordirs; Name: "{app}\hgd\cache"

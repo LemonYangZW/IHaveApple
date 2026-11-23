@@ -37,7 +37,6 @@ APP_DIR = os.path.dirname(sys.executable) if FROZEN else HERE
 SDK_DIR = os.environ.get("IHAVEAPPLE_SDK") or (
     os.path.join(APP_DIR, "hgd") if FROZEN else os.path.join(HERE, "..", "..", "hongguo", "hgd"))
 SDK_EXE = os.path.join(SDK_DIR, "ohgd.exe")
-SDK_CACHE = os.path.join(SDK_DIR, "cache")
 API = "http://127.0.0.1:8899"
 QUALITY = "1080p"                 # 界面选「自动」（definition 为空）时用的清晰度
 SWITCH_WAIT = 40                  # 播放中换清晰度时，最多等新清晰度落盘多久（秒）
@@ -48,13 +47,9 @@ SWITCH_WAIT = 40                  # 播放中换清晰度时，最多等新清�
 CHANNELS = ("真人剧", "漫剧", "推荐")
 DEFAULT_CHANNEL = "推荐"
 
-# 封面缓存。服务端封面是 HEIC（Content-Type: image/heic），Qt 无法解码，
-# 所以用 ffmpeg 转成 JPEG 存本地，QML 只读这个 file:// 地址。
-COVER_DIR = os.path.join(HERE, ".cache", "covers")
-
-# feed 缓存：/v1/feed 每次回源要 4–5 秒（后端不缓存），所以按频道缓存在本地。
-# 切回看过的频道 0 秒出画面，冷启动也能先出画面再后台刷新。
-FEED_DIR = os.path.join(HERE, ".cache", "feeds")
+# 缓存根目录：封面、推荐列表、视频缓存统一放在一棵树里，设置页可以整体换位置。
+# 默认放在用户目录（安装目录可能不可写，也不该塞进程序目录）；IHAVEAPPLE_CACHE 供测试覆盖。
+# 结构：<root>/covers（封面）、<root>/feeds（推荐列表）、<root>/video（ohgd 视频缓存）。
 FEED_TTL = 30 * 60                # 缓存被认为「够新」的时长（秒）；过期仍可先用后刷
 COVER_WIDTH = 480                 # 竖屏海报按窗口宽度出图，够清楚又不拖慢加载
 _BUNDLED_FFMPEG = os.path.join(APP_DIR, "ffmpeg", "ffmpeg.exe")
@@ -77,6 +72,83 @@ COVER_PAIRS = [
     ("#5B2333", "#C2595E"), ("#3C2A4D", "#B27BA8"),
     ("#1E2B38", "#4F7A94"), ("#4A3420", "#C9965A"),
 ]
+
+
+def _default_cache_root():
+    base = os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), ".cache")
+    return os.path.join(base, "IHaveApple", "cache")
+
+
+def _cache_root_from_settings():
+    """缓存目录：IHAVEAPPLE_CACHE > 设置页保存的值 > 用户目录下的默认位置。"""
+    env = os.environ.get("IHAVEAPPLE_CACHE") or ""
+    if env:
+        return os.path.abspath(os.path.expanduser(env))
+    try:
+        saved = QSettings().value("cache/dir", "", type=str)
+    except Exception:
+        saved = ""
+    if saved:
+        return os.path.abspath(os.path.expanduser(saved))
+    return _default_cache_root()
+
+
+def current_cache_root():
+    return _cache_root_from_settings()
+
+
+def video_cache_dir():
+    return os.path.join(current_cache_root(), "video")
+
+
+def cover_cache_dir():
+    return os.path.join(current_cache_root(), "covers")
+
+
+def feed_cache_dir():
+    return os.path.join(current_cache_root(), "feeds")
+
+
+def _cache_subdirs(root):
+    return (os.path.join(root, "covers"),
+            os.path.join(root, "feeds"),
+            os.path.join(root, "video"))
+
+
+def _ensure_cache_dirs(root):
+    for d in (root,) + _cache_subdirs(root):
+        os.makedirs(d, exist_ok=True)
+
+
+def _dir_size(root):
+    total = 0
+    for base, _dirs, files in os.walk(root):
+        for name in files:
+            try:
+                total += os.path.getsize(os.path.join(base, name))
+            except OSError:
+                pass
+    return total
+
+
+def _fmt_bytes(n):
+    n = float(max(0, n))
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} TB"
+
+
+def _path_from_input(text):
+    """设置页选出来的可能是 file:///D:/... 也可能是普通路径。"""
+    s = (text or "").strip()
+    if s.startswith("file:"):
+        p = urllib.parse.urlparse(s).path
+        if os.name == "nt" and len(p) > 2 and p[0] == "/" and p[2] == ":":
+            p = p[1:]
+        return os.path.abspath(os.path.expanduser(urllib.parse.unquote(p)))
+    return os.path.abspath(os.path.expanduser(s))
 
 
 class AnonLimited(Exception):
@@ -113,7 +185,7 @@ def _file_url(path):
     return "file:///" + os.path.abspath(path).replace("\\", "/")
 
 
-def _cover_file(drama_id, url):
+def _cover_file(drama_id, url, cover_dir):
     """下载封面并转成本地 JPEG，返回 file:/// 地址；失败返回 ""（QML 退回占位渐变）。
 
     服务端给的是 HEIC，Qt 自己解不了：先用 ftyp 盒子判断格式，HEIC 走 ffmpeg 转码。
@@ -121,11 +193,11 @@ def _cover_file(drama_id, url):
     """
     if not url:
         return ""
-    out = os.path.join(COVER_DIR, f"{drama_id}.jpg")
+    out = os.path.join(cover_dir, f"{drama_id}.jpg")
     if os.path.exists(out) and os.path.getsize(out) > 1024:
         return _file_url(out)
-    os.makedirs(COVER_DIR, exist_ok=True)
-    tmp = os.path.join(COVER_DIR, f".{drama_id}.dl")
+    os.makedirs(cover_dir, exist_ok=True)
+    tmp = os.path.join(cover_dir, f".{drama_id}.dl")
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=25) as r, open(tmp, "wb") as f:
@@ -259,6 +331,7 @@ class HgService(QObject):
     channelChanged = Signal()
     toast = Signal(str)
     searchResults = Signal(str, list)         # query, [{id,title,total,covers,desc}]
+    cacheChanged = Signal()                   # 缓存目录 / 占用 / 忙闲状态变了
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -284,7 +357,19 @@ class HgService(QObject):
         self._preload_queue = [] # 预载队列 [(dramaId, ep, definition)]，按播放页给的顺序逐个落盘
         self._preloading = False # 预载线程是否在跑
         self._current_drama = "" # 最近一次准备播放的剧（用于记录 _channel_last）
+        # 缓存位置（设置页可改）：封面、推荐列表、视频各一个子目录
+        self._cache_root = _cache_root_from_settings()
+        try:
+            _ensure_cache_dirs(self._cache_root)
+        except Exception as e:
+            print(f"[sdk] 缓存目录不可用（{self._cache_root}）：{e}，改用默认目录", flush=True)
+            self._cache_root = _default_cache_root()
+            _ensure_cache_dirs(self._cache_root)
+        self._cover_dir, self._feed_dir, self._video_dir = _cache_subdirs(self._cache_root)
+        self._cache_busy = False
+        self._cache_size_text = ""
         self._load_feed_cache()
+        self.refreshCacheSize()
 
     # ---------- 生命周期 ----------
     def ensure_service(self):
@@ -295,7 +380,7 @@ class HgService(QObject):
             self.toast.emit(f"找不到 SDK：{SDK_EXE}")
             return
         try:
-            cmd = [SDK_EXE, "-addr", "127.0.0.1:8899", "-cache", os.path.abspath(SDK_CACHE)]
+            cmd = [SDK_EXE, "-addr", "127.0.0.1:8899", "-cache", os.path.abspath(self._video_dir)]
             if FROZEN and FFMPEG:
                 cmd += ["-ffmpeg", FFMPEG]      # 打包版用自带的 ffmpeg（开发时按 SDK 的 config.json）
             self._proc = subprocess.Popen(
@@ -323,12 +408,33 @@ class HgService(QObject):
         except Exception:
             return False
 
-    def shutdown(self):
-        if self._proc:
+    def _stop_service(self, wait=True):
+        """停掉 ohgd（换缓存目录 / 清缓存前必须先停，否则文件被占用）。"""
+        proc, self._proc = self._proc, None
+        if proc is not None:
             try:
-                self._proc.terminate()
+                proc.terminate()
             except Exception:
                 pass
+            if wait:
+                try:
+                    proc.wait(timeout=5)
+                except Exception:
+                    try:
+                        proc.kill()
+                        proc.wait(timeout=3)
+                    except Exception:
+                        pass
+        job, self._job = self._job, None
+        if job:
+            try:
+                import ctypes
+                ctypes.windll.kernel32.CloseHandle(job)
+            except Exception:
+                pass
+
+    def shutdown(self):
+        self._stop_service(wait=False)
 
     # ---------- 数据 ----------
     @Property(list, notify=dramasChanged)
@@ -442,12 +548,12 @@ class HgService(QObject):
 
     # ---------- 缓存 ----------
     def _cache_path(self, ch):
-        return os.path.join(FEED_DIR, ch + ".json")
+        return os.path.join(self._feed_dir, ch + ".json")
 
     def _load_feed_cache(self):
         """启动时把上次的 feed 缓存读进内存（含每个频道上次看的剧）。"""
         try:
-            os.makedirs(FEED_DIR, exist_ok=True)
+            os.makedirs(self._feed_dir, exist_ok=True)
         except Exception:
             return
         for ch in CHANNELS:
@@ -472,7 +578,7 @@ class HgService(QObject):
         if not entry:
             return
         try:
-            os.makedirs(FEED_DIR, exist_ok=True)
+            os.makedirs(self._feed_dir, exist_ok=True)
             tmp = self._cache_path(ch) + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump({"items": entry["items"], "ts": entry["ts"],
@@ -482,6 +588,141 @@ class HgService(QObject):
             os.replace(tmp, self._cache_path(ch))
         except Exception as e:
             print(f"[sdk] feed 缓存写入失败 {ch}: {e}", flush=True)
+
+    # ---------- 缓存目录与清理（设置页） ----------
+    @Property(str, notify=cacheChanged)
+    def cacheDir(self):
+        return self._cache_root
+
+    @Property(str, notify=cacheChanged)
+    def cacheSizeText(self):
+        return self._cache_size_text or "计算中…"
+
+    @Property(bool, notify=cacheChanged)
+    def cacheBusy(self):
+        return self._cache_busy
+
+    @Slot()
+    def refreshCacheSize(self):
+        """后台统计缓存占用（视频缓存可能有几个 GB，别在 UI 线程里 walk）。"""
+        root = self._cache_root
+
+        def work():
+            size = _dir_size(root)
+            if root != self._cache_root:
+                return                      # 统计期间换了目录，这批结果作废
+            self._cache_size_text = _fmt_bytes(size)
+            self.cacheChanged.emit()
+
+        threading.Thread(target=work, daemon=True).start()
+
+    @Slot()
+    def chooseCacheDir(self):
+        """弹系统目录选择框；选中后切换缓存位置。"""
+        if self._cache_busy:
+            return
+        try:
+            from PySide6.QtWidgets import QApplication, QFileDialog
+            parent = QApplication.activeWindow()
+            path = QFileDialog.getExistingDirectory(parent, "选择缓存目录", self._cache_root)
+        except Exception as e:
+            self.toast.emit(f"打开目录选择失败：{e}")
+            return
+        if path:
+            self.setCacheDir(path)
+
+    @Slot(str)
+    def setCacheDir(self, path):
+        if self._cache_busy:
+            return
+        new = _path_from_input(str(path))
+        if not new:
+            return
+        if os.path.abspath(new) == os.path.abspath(self._cache_root):
+            self.toast.emit("缓存已经在这个目录")
+            return
+        # 先确认目录可写：外部磁盘 / 受保护目录直接拒绝，别等播放时才炸
+        try:
+            _ensure_cache_dirs(new)
+            probe = os.path.join(new, ".write-test")
+            with open(probe, "wb") as f:
+                f.write(b"ok")
+            os.remove(probe)
+        except Exception as e:
+            self.toast.emit(f"这个目录不能用：{e}")
+            return
+        try:
+            QSettings().setValue("cache/dir", new)
+        except Exception:
+            pass
+        self._cache_busy = True
+        self.cacheChanged.emit()
+        threading.Thread(target=self._switch_cache_dir, args=(new,), daemon=True).start()
+
+    def _switch_cache_dir(self, new):
+        try:
+            self._stop_service()            # ohgd 还握着旧目录里的视频文件
+            self._cache_root = new
+            self._cover_dir, self._feed_dir, self._video_dir = _cache_subdirs(new)
+            with self._lock:
+                self._feed_cache.clear()
+                for d in self._dramas:
+                    d["cover"] = ""          # 旧目录的封面不再引用，回占位后重新补
+                    d["cover_tried"] = False
+            self._load_feed_cache()
+            self.dramasChanged.emit()
+            self._backfill_covers_async(limit=20)
+            print(f"[sdk] 缓存目录 -> {new}", flush=True)
+            self.toast.emit("缓存目录已切换；旧目录里的文件不会自动删除")
+        except Exception as e:
+            self.toast.emit(f"切换缓存目录失败：{e}")
+        finally:
+            self._cache_busy = False
+            self.refreshCacheSize()
+            self.cacheChanged.emit()
+
+    @Slot()
+    def clearCache(self):
+        """清空当前缓存目录。会先停 ohgd：视频文件被占用时 Windows 删不掉。"""
+        if self._cache_busy:
+            return
+        self._cache_busy = True
+        self.cacheChanged.emit()
+        threading.Thread(target=self._clear_cache, daemon=True).start()
+
+    def _clear_cache(self):
+        before = _dir_size(self._cache_root)
+        try:
+            self._stop_service()
+            for name in os.listdir(self._cache_root):
+                p = os.path.join(self._cache_root, name)
+                try:
+                    if os.path.isdir(p) and not os.path.islink(p):
+                        shutil.rmtree(p, ignore_errors=True)
+                    else:
+                        os.remove(p)
+                except OSError as e:
+                    print(f"[sdk] 缓存删除失败 {p}: {e}", flush=True)
+            _ensure_cache_dirs(self._cache_root)
+            after = _dir_size(self._cache_root)   # 先量，再补封面，免得把新图算进去
+            with self._lock:
+                for d in self._dramas:
+                    d["cover"] = ""
+                    d["cover_tried"] = False
+            self.dramasChanged.emit()
+            self._backfill_covers_async(limit=20)
+            freed = max(0, before - after)
+            msg = f"已清理缓存，释放 {_fmt_bytes(freed)}"
+            if after > 0:
+                msg += f"；还有 {_fmt_bytes(after)} 被占用，退出后会自动释放"
+            self.toast.emit(msg)
+            print(f"[sdk] 清理缓存：{_fmt_bytes(before)} -> {_fmt_bytes(after)}", flush=True)
+        except Exception as e:
+            self.toast.emit(f"清理缓存失败：{e}")
+        finally:
+            self._cache_busy = False
+            self.refreshCacheSize()
+            self.cacheChanged.emit()
 
     def _fetch_feed(self, ch, cursor=""):
         """请求 feed 的一页，返回 (items, cursor, has_more)。
@@ -1003,7 +1244,7 @@ class HgService(QObject):
             did, url = job
             if not url:
                 return (did, "", "no cover_url")
-            cover = _cover_file(did, url)
+            cover = _cover_file(did, url, self._cover_dir)
             return (did, cover, "" if cover else "transcode failed")
 
         q = Queue()

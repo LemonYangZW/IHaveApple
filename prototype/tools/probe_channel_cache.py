@@ -19,14 +19,14 @@ app.setOrganizationName("IHaveApple")
 app.setApplicationName("IHaveApple-probe")
 
 import hgservice                                              # noqa: E402
-from hgservice import HgService, CHANNELS, FEED_DIR           # noqa: E402
+from hgservice import HgService, CHANNELS, feed_cache_dir           # noqa: E402
 
 KEEP = "--keep" in sys.argv
-if not KEEP and os.path.isdir(FEED_DIR):
-    shutil.rmtree(FEED_DIR, ignore_errors=True)
+if not KEEP and os.path.isdir(feed_cache_dir()):
+    shutil.rmtree(feed_cache_dir(), ignore_errors=True)
     print("[probe] 已清空 feed 缓存\n", flush=True)
 
-COLD = not os.path.isdir(FEED_DIR) or not os.listdir(FEED_DIR)
+COLD = not os.path.isdir(feed_cache_dir()) or not os.listdir(feed_cache_dir())
 
 
 def wait_feed(svc, timeout=30):
@@ -73,5 +73,5 @@ t0 = time.time()
 svc2.load_async()
 t = wait_feed(svc2)
 print(f"  {svc2.channel} → 剧单就绪 {t:5.2f}s，{len(svc2._dramas)} 部", flush=True)
-print(f"  缓存文件: {sorted(os.listdir(FEED_DIR)) if os.path.isdir(FEED_DIR) else '无'}", flush=True)
+print(f"  缓存文件: {sorted(os.listdir(feed_cache_dir())) if os.path.isdir(feed_cache_dir()) else '无'}", flush=True)
 svc2.shutdown()
