@@ -14,8 +14,11 @@ const (
 	// 移进了请求体（App 里的模板是 POST /novel/player/multi_video_model/:dr_scene/v1/），
 	// 旧路径 /multi_video_model/player/v1 仍回 HTTP 200 但响应体为空，
 	// 所以它不再被当成「路由不可用」。
-	PathPlaybackV5      = "/novel/player/multi_video_model/v1/"
-	PathVideoTab        = "/reading/bookapi/video_tab/multi_video_model/v1/"
+	PathPlaybackV5 = "/novel/player/multi_video_model/v1/"
+	PathVideoTab   = "/reading/bookapi/video_tab/multi_video_model/v1/"
+	// 2026-11-23 的空体与 version_code 无关：74332 与 74532 都回 HTTP 200 空体，
+	// 真正被服务端卡住的是签名头 x-medusa 的内容（见 sdk/media.go 的
+	// degradePlaybackMedusa）。版本号继续跟随 APK 观测值，不参与这道闸门。
 	PlaybackVersionCode = 74332
 	PlaybackVersionName = "7.4.3.32"
 )

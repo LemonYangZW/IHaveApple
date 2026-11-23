@@ -45,17 +45,17 @@ var (
 	signerToken    = flag.String("signer-token", "", "签名服务鉴权 token")
 
 	// B 类：本地运行参数
-	addr         = flag.String("addr", "127.0.0.1:8899", "监听地址（播放器连这个）")
-	profile      = flag.String("profile", "anonymous.json", "匿名设备档案路径")
-	ffmpegBin    = flag.String("ffmpeg", "ffmpeg", "ffmpeg 可执行文件")
-	cacheDir     = flag.String("cache", "./cache", "明文缓存目录")
-	quality      = flag.String("quality", "1080p", "默认拉流清晰度")
-	maxCacheMB   = flag.Int("max-cache-mb", 2048, "缓存上限（MB），超出按最旧删除，0=不限")
-	channel      = flag.String("channel", "真人剧", "默认 feed 频道")
-	warmWork     = flag.Int("warm", 3, "feed 时后台预热前 N 条")
-	exposeKey    = flag.Bool("expose-key", false, "是否在 /v1/play 响应里返回 content_key")
-	configPath   = flag.String("config", "config.json", "配置文件路径，不存在则忽略")
-	padMode      = flag.Bool("pad", false, "以平板（PAD）设备身份注册（dragon_device_type=pad）")
+	addr       = flag.String("addr", "127.0.0.1:8899", "监听地址（播放器连这个）")
+	profile    = flag.String("profile", "anonymous.json", "匿名设备档案路径")
+	ffmpegBin  = flag.String("ffmpeg", "ffmpeg", "ffmpeg 可执行文件")
+	cacheDir   = flag.String("cache", "./cache", "明文缓存目录")
+	quality    = flag.String("quality", "1080p", "默认拉流清晰度")
+	maxCacheMB = flag.Int("max-cache-mb", 2048, "缓存上限（MB），超出按最旧删除，0=不限")
+	channel    = flag.String("channel", "真人剧", "默认 feed 频道")
+	warmWork   = flag.Int("warm", 3, "feed 时后台预热前 N 条")
+	exposeKey  = flag.Bool("expose-key", false, "是否在 /v1/play 响应里返回 content_key")
+	configPath = flag.String("config", "config.json", "配置文件路径，不存在则忽略")
+	padMode    = flag.Bool("pad", false, "以平板（PAD）设备身份注册（dragon_device_type=pad）")
 )
 
 // ---------- 应用 ----------
@@ -132,6 +132,41 @@ func padDevice() model.Device {
 	return d
 }
 
+// localSignerURL 是 signer/ 里 docker-compose 默认映射到的本机签名服务地址。
+const localSignerURL = "http://127.0.0.1:19830"
+
+// resolveSigner 决定请求签名交给内置实现还是本机签名服务：
+// signer-url 显式给了就用它，写成 none/off 强制用内置签名；
+// 留空时探测本机 19830 端口，探到就用，探不到静默回内置签名——播放接口目前
+// 只对「解不出来的」x-medusa 放行（见 sdk/media.go 的 degradePlaybackMedusa），
+// 所以签名服务只影响目录请求，缺了它也不影响起播。
+func resolveSigner() {
+	switch strings.ToLower(strings.TrimSpace(*signerURL)) {
+	case "none", "off", "builtin", "内置":
+		*signerURL = ""
+		log.Printf("请求签名：内置实现（signer-url 已禁用）")
+		return
+	case "":
+	default:
+		log.Printf("请求签名：%s", *signerURL)
+		return
+	}
+	cl := &http.Client{Timeout: 300 * time.Millisecond}
+	resp, err := cl.Get(localSignerURL + "/ready")
+	if err != nil {
+		log.Printf("请求签名：内置实现（本机未运行签名服务）")
+		return
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+	if resp.StatusCode == 200 && strings.Contains(string(body), `"ready":true`) {
+		*signerURL = localSignerURL
+		log.Printf("请求签名：本机签名服务 %s", localSignerURL)
+		return
+	}
+	log.Printf("请求签名：内置实现（本机签名服务未就绪）")
+}
+
 func main() {
 	flag.Parse()
 	applyConfig(*configPath)
@@ -142,6 +177,7 @@ func main() {
 	if err := os.MkdirAll(*cacheDir, 0o755); err != nil {
 		log.Fatalf("创建缓存目录失败: %v", err)
 	}
+	resolveSigner()
 
 	opts := sdk.Options{
 		RetryAttempts:      2,
@@ -945,6 +981,7 @@ func (p *prefixWriter) Write(b []byte) (int, error) {
 	}
 	return len(b), nil
 }
+
 // ---------------- 配置文件 ----------------
 
 // configFile 是 config.json 的结构。所有字段可选，未出现的字段回落到 flag 默认值。

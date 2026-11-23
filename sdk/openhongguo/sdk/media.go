@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/beilunyang/openhongguo/internal/drm"
@@ -50,6 +51,11 @@ func (c *Client) ResolvePlayback(ctx context.Context, episodeID string, _ Playba
 			headers["Accept"] = "application/json; charset=utf-8,application/x-protobuf"
 			headers["x-xs-from-web"] = "0"
 			headers["Content-Encoding"] = "gzip"
+			// 首次用畸形 x-medusa 绕过服务端的签名判定；重试时恢复原样，
+			// 万一上游改口径重新接受内置签名，这里不用再改代码。
+			if attempt == 0 {
+				degradePlaybackMedusa(headers)
+			}
 			raw, _, err = c.doRaw(ctx, "POST", c.apiOrigin+protocol.PathPlaybackV5+"?"+query, headers, body)
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return nil, ctxErr
@@ -82,7 +88,9 @@ func (c *Client) ResolvePlayback(ctx context.Context, episodeID string, _ Playba
 				}
 				ticket := c.clock().UnixMilli()
 				query, headers := sign.SignPlaybackPOST(protocol.PathPlayback, protocol.DeviceQueryPairs(c.identity(p)), ticket, p.DeviceID, protocol.VersionName, legacyBody, nil)
-				raw, _, err = c.doRaw(ctx, "POST", c.apiOrigin+protocol.PathPlayback+"?"+query, anonymousHeaders(c, p, ticket, headers), legacyBody)
+				legacyHeaders := anonymousHeaders(c, p, ticket, headers)
+				degradePlaybackMedusa(legacyHeaders)
+				raw, _, err = c.doRaw(ctx, "POST", c.apiOrigin+protocol.PathPlayback+"?"+query, legacyHeaders, legacyBody)
 				if ctxErr := ctx.Err(); ctxErr != nil {
 					return nil, ctxErr
 				}
@@ -103,6 +111,24 @@ func (c *Client) ResolvePlayback(ctx context.Context, episodeID string, _ Playba
 		}
 		return playback, nil
 	})
+}
+
+// 上游 2026-11-23 起，播放接口只要拿到「能被解出来的」x-medusa（内置签名或
+// openhongguo-signer 给的都一样）就回 HTTP 200 + 空体，目录读取不受影响。
+// 实测把 x-medusa 变成无法解析的畸形值（原值后追加标记字符）反而放行：
+// 服务端解不出签名时走宽松分支，仍然下发播放模型。
+// 只对播放类请求这么做；目录接口同样校验签名，篡改会让 feed/episodes 变空体。
+const playbackMedusaSentinel = "ff"
+
+// playbackRequest 判断是否是播放类请求（播放模型、video_tab、旧播放接口）。
+func playbackRequest(rawURL string) bool {
+	return strings.Contains(rawURL, "/novel/player/") || strings.Contains(rawURL, "/reading/bookapi/video_tab/")
+}
+
+func degradePlaybackMedusa(headers map[string]string) {
+	if v, ok := headers["x-medusa"]; ok && v != "" {
+		headers["x-medusa"] = v + playbackMedusaSentinel
+	}
 }
 
 func playbackRouteUnavailable(err error) bool {
@@ -127,6 +153,7 @@ func (c *Client) resolveVideoTab(ctx context.Context, p *DeviceProfile, episodeI
 	if p != nil {
 		headers["Cookie"] = guestCookie(p)
 	}
+	degradePlaybackMedusa(headers)
 	raw, _, err := c.doRaw(ctx, "GET", c.apiOrigin+protocol.PathVideoTab+"?"+query, headers, nil)
 	return raw, err
 }
