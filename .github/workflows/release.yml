@@ -21,19 +21,16 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # 不开 pip / Go 缓存：实测恢复缓存比直接装还慢（PySide6 的时间花在解包安装，Go 缓存主要是标准库编译结果），
+      # 结束时还要额外保存缓存
       - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
-          cache: pip
-          cache-dependency-path: prototype/requirements.txt
 
       - uses: actions/setup-go@v7
         with:
           go-version-file: sdk/hgd/go.mod
-          # 没有外部依赖、也就没有 go.sum，缓存键按两个 go.mod 算（缓存的主要是编译缓存）
-          cache-dependency-path: |
-            sdk/hgd/go.mod
-            sdk/openhongguo/go.mod
+          cache: false
 
       - name: 测试内置签名
         working-directory: sdk/openhongguo
