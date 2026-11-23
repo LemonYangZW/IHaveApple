@@ -44,6 +44,8 @@ python prototype/main.py
 推送 `v*` 标签会触发 GitHub Actions（[.github/workflows/release.yml](.github/workflows/release.yml)）：下载 libmpv 和 ffmpeg，编译 `ohgd`，用 PyInstaller 打包播放器，再用 Inno Setup 生成安装包，发布到对应的 Release。
 打包脚本会校验 `hgd/config.json` 的 `signer_url` 为空，确保发行包使用 `ohgd` 内置签名、不依赖外部服务。
 
+版本变更记录在 [CHANGELOG.md](CHANGELOG.md)。发版前把「未发布」一节改成新版本号，并在 [.github/release-notes.md](.github/release-notes.md) 的「更新」里补一行 `- vX.Y.Z：…`（播放器的更新提示从这里读取更新内容）。
+
 本地打包：
 
 ```powershell
