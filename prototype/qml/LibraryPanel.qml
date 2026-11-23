@@ -67,22 +67,26 @@ Item {
     clip: true
     visible: open || slide.running
 
+    // 展开进度 0 → 1，只对开关做动画。不能直接给 panel.y 加 Behavior：关闭时 y = -height，
+    // 放大窗口时 height 一变也会触发滑动，动画期间面板可见，标题栏下方会露出一截面板
+    property real reveal: open ? 1 : 0
+    Behavior on reveal {
+        NumberAnimation {
+            id: slide
+            duration: Theme.reducedMotion ? 0 : Theme.motion.base
+            easing.type: Easing.BezierSpline
+            easing.bezierCurve: Theme.motion.baseCurve
+        }
+    }
+
     Rectangle {
         id: panel
         width: parent.width
         height: parent.height
-        y: lib.open ? 0 : -height
+        y: -height * (1 - lib.reveal)
         color: Theme.color.wing
         bottomLeftRadius: Theme.radius.lg
         bottomRightRadius: Theme.radius.lg
-        Behavior on y {
-            NumberAnimation {
-                id: slide
-                duration: Theme.reducedMotion ? 0 : Theme.motion.base
-                easing.type: Easing.BezierSpline
-                easing.bezierCurve: Theme.motion.baseCurve
-            }
-        }
 
         // 吃掉点击和滚轮，避免穿透到舞台
         MouseArea {

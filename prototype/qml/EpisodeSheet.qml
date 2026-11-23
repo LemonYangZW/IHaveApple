@@ -20,19 +20,23 @@ Item {
     clip: true
     visible: open || slide.running
 
+    // 展开进度 0 → 1，只对开关做动画。不能直接给 panel.y 加 Behavior：关闭时 y = height，
+    // 窗口放大、换剧导致面板高度变化时也会触发滑动，动画期间面板可见，底部会露出一截
+    property real reveal: open ? 1 : 0
+    Behavior on reveal {
+        NumberAnimation {
+            id: slide
+            duration: Theme.reducedMotion ? 0 : Theme.motion.base
+            easing.type: Easing.BezierSpline
+            easing.bezierCurve: Theme.motion.baseCurve
+        }
+    }
+
     Item {
         id: panel
         width: parent.width
         height: parent.height
-        y: sheet.open ? 0 : height
-        Behavior on y {
-            NumberAnimation {
-                id: slide
-                duration: Theme.reducedMotion ? 0 : Theme.motion.base
-                easing.type: Easing.BezierSpline
-                easing.bezierCurve: Theme.motion.baseCurve
-            }
-        }
+        y: height * (1 - sheet.reveal)
 
         // 背景：顶部 episodeFade 高度内由透明过渡到 scrimDeep，其余铺满
         Rectangle {

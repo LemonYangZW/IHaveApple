@@ -2,6 +2,12 @@
 
 本项目的版本变更都记录在这里。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [v0.1.8] - 2026-11-23
+
+### 修复
+
+- 放大窗口时标题栏下方闪出一大块深色面板（关着的搜索 / 观看历史面板被尺寸变化触发了滑动动画）；选集面板在放大窗口或换剧时底部也会闪出一截，一并修复。面板现在只在打开 / 关闭时滑动
+
 ## [v0.1.7] - 2026-11-23
 
 ### 修复
@@ -94,7 +100,8 @@
 - 进度条精准跳转，未缓存的集也能拖到任意位置
 - 选集面板、搜索、观看历史、设置（快捷键、自动连播、最小化暂停、清晰度、倍速等）
 
-[未发布]: https://github.com/LemonYangZW/IHaveApple/compare/v0.1.7...HEAD
+[未发布]: https://github.com/LemonYangZW/IHaveApple/compare/v0.1.8...HEAD
+[v0.1.8]: https://github.com/LemonYangZW/IHaveApple/compare/v0.1.7...v0.1.8
 [v0.1.7]: https://github.com/LemonYangZW/IHaveApple/compare/v0.1.6...v0.1.7
 [v0.1.6]: https://github.com/LemonYangZW/IHaveApple/compare/v0.1.5...v0.1.6
 [v0.1.5]: https://github.com/LemonYangZW/IHaveApple/compare/v0.1.4...v0.1.5
