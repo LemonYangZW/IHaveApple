@@ -229,8 +229,11 @@ ApplicationWindow {
     // 搜索 / 观看历史整页打开时暂停播放，关闭后恢复
     property bool pausedByLibrary: false
 
-    // 整页面板（设置、搜索 / 历史）从频道 tab 下方开始；标题栏和频道 tab 本身是透明叠层，
-    // 面板打开时在它们下面铺上和面板同色的底，别让画面从顶部透出来
+    // 整页面板（设置、搜索 / 历史）打开时隐藏频道 tab（全剧界面的顶栏同理），面板顶到标题栏下面。
+    // 位置按「面板还看得见」算（含关闭时的滑出 / 淡出），免得关闭途中面板先往下跳一行
+    readonly property bool panelShown: library.visible || settings.visible
+
+    // 标题栏是透明叠层：面板打开时在它下面铺上和面板同色的底，别让画面从顶部透出来
     Rectangle {
         anchors.left: parent.left
         anchors.right: parent.right
@@ -256,7 +259,8 @@ ApplicationWindow {
         onHistory: library.toggle("history")
         onSettings: settings.toggle()
     }
-    // 顶部频道 tab：透明形式叠在画面上，和标题栏一起淡入淡出；全剧界面时换成 DramaBar
+    // 顶部频道 tab：透明形式叠在画面上，和标题栏一起淡入淡出；全剧界面时换成 DramaBar。
+    // 设置 / 搜索 / 历史打开时隐藏：那时在看面板，频道切换用不上
     ChannelBar {
         id: channelBar
         objectName: "channelBar"
@@ -264,7 +268,7 @@ ApplicationWindow {
         anchors.right: parent.right
         anchors.top: titleBar.bottom
         visible: !win.immersive && !player.dramaMode && opacity > 0
-        opacity: player.chromeShown || library.open || settings.open ? 1 : 0
+        opacity: player.chromeShown && !library.open && !settings.open ? 1 : 0
         Behavior on opacity { NumberAnimation { duration: Theme.reducedMotion ? 0 : Theme.motion.base } }
         onPicked: ch => win.pickChannel(ch)
     }
@@ -286,7 +290,7 @@ ApplicationWindow {
         id: banner
         anchors.left: parent.left
         anchors.right: parent.right
-        y: titleBar.visible ? titleBar.height + channelBar.height : 0
+        y: titleBar.visible ? titleBar.height + (win.panelShown ? 0 : channelBar.height) : 0
         visible: Store.offline
     }
 

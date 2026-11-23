@@ -14,7 +14,6 @@ Item {
     property real duration: 1
     property alias grid: grid
     signal pick(int ep)
-    signal wheelStep(int dir)   // 面板上的滚轮：翻本剧上下集（由播放页处理）
 
     implicitHeight: header.y + header.height + Theme.space.xs + grid.implicitHeight + Theme.space.sm
     clip: true
@@ -55,23 +54,12 @@ Item {
             color: Theme.color.scrimDeep
         }
 
-        // 吃掉点击（避免穿透到舞台触发暂停）；滚轮转成「翻本剧上下集」交给播放页。
-        // 进了选集面板就是「本剧模式」，这时滚动不再换剧。
+        // 吃掉点击（避免穿透到舞台触发暂停）和滚轮。面板里的滚轮只滚动面板自己：
+        // 方格放不下时上下滚方格、分页栏上横向滚分页（都由它们自己处理，叠在这一层上面）；
+        // 滚到头或无处可滚的滚轮落到这里吃掉，不漏到舞台上去翻集
         MouseArea {
-            id: sheetWheel
             anchors.fill: parent
-            property real wheelAccum: 0
-            onWheel: wheel => {
-                wheel.accepted = true
-                // 鼠标滚轮每格 120；触控板惯性滚动按像素累计，超过 120 才翻一集
-                wheelAccum += wheel.pixelDelta.y !== 0 ? wheel.pixelDelta.y : wheel.angleDelta.y
-                if (Math.abs(wheelAccum) >= 120) {
-                    sheet.wheelStep(wheelAccum < 0 ? 1 : -1)
-                    wheelAccum = 0
-                }
-                wheelReset.restart()
-            }
-            Timer { id: wheelReset; interval: 300; onTriggered: sheetWheel.wheelAccum = 0 }
+            onWheel: wheel => wheel.accepted = true
         }
 
         Row {

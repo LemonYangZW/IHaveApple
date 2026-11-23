@@ -36,7 +36,7 @@ QQC.Popup {
         Column {
             spacing: Theme.space.xxs
             Label { role: Theme.type.h2; text: "界面状态演示" }
-            Label { role: Theme.type.caption; color: Theme.color.aside; text: "仅原型使用（Ctrl+Shift+D）。" }
+            Label { role: Theme.type.caption; color: Theme.color.aside; text: "调试用（Ctrl+Shift+D）。" }
         }
 
         Flow {

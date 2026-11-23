@@ -60,6 +60,17 @@ Item {
         boundsBehavior: Flickable.StopAtBounds
         contentHeight: content.height + Theme.space.xl
 
+        // 滚轮按桌面习惯逐格滚：每格按系统「一次滚动的行数」立即滚动，不用 Flickable 默认的
+        // 移动端式惯性滑行（每格给一个初速度、慢慢减速，连续滚还会越滚越快）
+        WheelHandler {
+            target: null
+            onWheel: event => {
+                const dy = event.pixelDelta.y !== 0 ? event.pixelDelta.y      // 触控板：按像素跟手
+                         : event.angleDelta.y / 120 * Qt.styleHints.wheelScrollLines * Theme.type.body.line
+                flick.contentY = Math.max(0, Math.min(flick.contentHeight - flick.height, flick.contentY - dy))
+            }
+        }
+
         Column {
             id: content
             x: Math.max(Theme.space.md, (parent.width - width) / 2)
@@ -336,7 +347,7 @@ Item {
                 role: Theme.type.caption
                 color: Theme.color.aside
                 wrapMode: Text.WordWrap
-                text: "IHaveApple · UI 原型 v2.2\n设置保存在本机，下次启动时自动恢复。"
+                text: "设置保存在本机，下次启动时自动恢复。"
             }
         }
     }

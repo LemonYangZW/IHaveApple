@@ -366,7 +366,6 @@ Rectangle {
         position: stage.position
         duration: stage.duration
         onPick: ep => page.goTo(ep)
-        onWheelStep: dir => page.stepEpisodeOrDrama(dir)     // 面板打开时同样翻集，首尾拦截
     }
 
     // ---------- 全剧界面 ----------

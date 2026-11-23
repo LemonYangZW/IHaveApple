@@ -1,8 +1,8 @@
-"""验收：选集面板打开后进入「本剧模式」——滚轮翻本剧上下集。
+"""验收：选集面板打开后进入「本剧模式」——画面上的滚轮翻本剧上下集。
 
 覆盖：
-  1. 「查看全集」打开面板后，滚轮 = 翻集（同剧，集号 ±1）
-  2. 面板内的滚轮事件真的会转发出来（sheet.wheelStep）
+  1. 「查看全集」打开面板后，画面上的滚轮 = 翻集（同剧，集号 ±1）
+  2. 选集面板上的滚轮不翻集，也不穿透到舞台（只滚动面板本身）
   3. 面板关掉后，滚轮恢复为换剧
   4. 面板打开时上下键同样翻集
 
@@ -144,16 +144,20 @@ def step3():
 
 
 def step4():
-    log("\n=== 3. 面板内的滚轮会转发出来（sheet.wheelStep）===")
+    log("\n=== 3. 选集面板上的滚轮不翻集（只滚动面板本身，不穿透到舞台）===")
     page = st["page"]
     ep_before = int(ev(page, "currentEp"))
-    # 在选集面板区域内发真实滚轮事件（向上 = 上一集）
+    drama_before = str(ev(page, "dramaId"))
+    # 在选集面板区域内发真实滚轮事件，上下各滚一格
     send_wheel(int(win.width() / 2), int(win.height() - 200), notches=-1)
-    QTest.qWait(3500)
+    QTest.qWait(1500)
+    send_wheel(int(win.width() / 2), int(win.height() - 200), notches=1)
+    QTest.qWait(1500)
     ep_after = int(ev(page, "currentEp"))
     log(f"  第 {ep_before + 1} 集 → 第 {ep_after + 1} 集")
-    check(ep_after == ep_before - 1, "面板上的滚轮翻回了上一集",
+    check(ep_after == ep_before, "面板上的滚轮没有翻集",
           f"{ep_before + 1} → {ep_after + 1}")
+    check(str(ev(page, "dramaId")) == drama_before, "也没有换剧")
     QTimer.singleShot(200, step5)
 
 

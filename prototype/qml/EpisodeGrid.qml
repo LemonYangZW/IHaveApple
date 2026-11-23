@@ -33,6 +33,11 @@ Item {
         selector.animate = animated && p === page && !Theme.reducedMotion
         page = p
         selector.ep = ep
+        // 方格放不下（窗口矮）时，把这一集所在的行滚进可见区
+        const top = Math.floor((ep - p * pageSize) / columns) * (cellHeight + gap)
+        if (top < area.contentY) area.contentY = top
+        else if (top + cellHeight > area.contentY + area.height)
+            area.contentY = Math.max(0, top + cellHeight - area.height)
     }
 
     // ---- 分页：一行胶囊，放不下时横向滚动（滚轮也可以），当前页始终滚到可见处 ----
