@@ -72,6 +72,9 @@ $PyArgs = @(
 )
 python @PyArgs
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller 失败" }
+# PyInstaller 会把 PySide6 的全部 QML 模块（3D、图表、地图……）都收进来，删掉用不到的（约 3000 → 300 个文件）
+python (Join-Path $PSScriptRoot "prune_qt.py") $Out
+if ($LASTEXITCODE -ne 0) { throw "修剪 Qt 失败" }
 
 Write-Host "== 2/4 编译 ohgd =="
 $Hgd = Join-Path $Out "hgd"

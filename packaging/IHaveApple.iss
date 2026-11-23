@@ -35,6 +35,12 @@ SetupIconFile=app.ico
 UninstallDisplayIcon={app}\IHaveApple.exe
 Compression=lzma2/max
 SolidCompression=yes
+; 多线程压缩：默认单线程，CI 上光压缩就要近 2 分钟。官方建议每个块线程配 2 个核，GitHub Windows 机器 4 核 → 2 个线程；
+; 按 64 MB 分块（文档要求不超过「数据总量 / 线程数」），分块会让安装包略大一点。
+; 多线程要的内存超出 32 位编译器的上限，放到独立的 64 位进程里压
+LZMANumBlockThreads=2
+LZMABlockSize=65536
+LZMAUseSeparateProcess=yes
 WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
