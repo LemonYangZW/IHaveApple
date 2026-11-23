@@ -2,6 +2,14 @@
 
 本项目的版本变更都记录在这里。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [v0.1.7] - 2026-11-23
+
+### 修复
+
+- 窗口按片源比例自动调整在换集后失效：换集时视频尺寸短暂归零会被误当成 9:16 套到窗口上，新一集的尺寸到达后反而不再跟随；启动时也不会自动适配横屏片源
+- 等比放大窗口时画面旁露出一片背景空白（暂停时一直留着），缩小时没有：画面尺寸现在随窗口实时重算
+- 带 `--size` 启动时，工具栏「窗口适配视频比例」按钮点了不切换选中态、再点也恢复不了 9:16
+
 ## [v0.1.6] - 2026-11-23
 
 ### 修复
@@ -86,7 +94,9 @@
 - 进度条精准跳转，未缓存的集也能拖到任意位置
 - 选集面板、搜索、观看历史、设置（快捷键、自动连播、最小化暂停、清晰度、倍速等）
 
-[未发布]: https://github.com/LemonYangZW/IHaveApple/compare/v0.1.5...HEAD
+[未发布]: https://github.com/LemonYangZW/IHaveApple/compare/v0.1.7...HEAD
+[v0.1.7]: https://github.com/LemonYangZW/IHaveApple/compare/v0.1.6...v0.1.7
+[v0.1.6]: https://github.com/LemonYangZW/IHaveApple/compare/v0.1.5...v0.1.6
 [v0.1.5]: https://github.com/LemonYangZW/IHaveApple/compare/v0.1.4...v0.1.5
 [v0.1.4]: https://github.com/LemonYangZW/IHaveApple/compare/v0.1.3...v0.1.4
 [v0.1.3]: https://github.com/LemonYangZW/IHaveApple/compare/v0.1.2...v0.1.3

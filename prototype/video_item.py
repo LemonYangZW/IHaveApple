@@ -41,6 +41,9 @@ class VideoItem(QQuickItem):
             self.update()
 
     def _report_size(self, *_):      # windowChanged 会带一个 window 参数
+        # 尺寸变了要重算纹理矩形：Qt 不会因几何变化自动调 updatePaintNode，
+        # 不刷新的话矩形停在旧尺寸 —— 放大窗口时会露出一片背景（暂停时一直留着），缩小则被裁掉看不出来
+        self.update()
         win = self.window()
         if _player is None or win is None:
             return

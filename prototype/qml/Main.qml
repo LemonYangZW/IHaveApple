@@ -70,7 +70,9 @@ ApplicationWindow {
     // 窗口适配视频：把有画面的片源比例套到窗口上，让画面铺满、不留黑边
     function toggleFitToVideo() {
         if (immersive) setImmersive(false)       // 全屏下改窗口几何没有意义，先退出
+        // fitToVideo 直接改：带 --size 启动时它与 prefs.fitWindow 不一致，只改 prefs 可能不发变化信号
         if (fitToVideo) {
+            fitToVideo = false
             Store.prefs.fitWindow = false
             applyAspect(designAspect)
             Store.toast("窗口已恢复 9:16")
@@ -81,15 +83,25 @@ ApplicationWindow {
             return
         }
         appliedVideoAspect = videoAspect
+        fitToVideo = true
         Store.prefs.fitWindow = true
         applyAspect(videoAspect)
         Store.toast("窗口已适配视频比例 " + Math.round(videoAspect * 100) / 100 + ":1")
     }
-    // 适配状态下换集，片源比例可能变（竖屏 ↔ 横屏），跟着重排一次
-    onVideoAspectChanged: {
-        if (!canFitToVideo) return       // 尺寸还没拿到 / 正在换集，保持上一次的比例
-        appliedVideoAspect = videoAspect
-        if (fitToVideo) applyAspect(videoAspect)
+    // 适配状态下换集，片源比例可能变（竖屏 ↔ 横屏），跟着重排一次。
+    // 直接监听播放器信号并现读宽高：videoAspect / canFitToVideo 同样依赖这个信号，
+    // 在 onVideoAspectChanged 里读 canFitToVideo 拿到的是重算前的旧值 —— 换集时尺寸归零那一下会被当成
+    // 有效比例套成 9:16，新尺寸到达时反而被当成无效跳过，窗口就不再跟随片源
+    Connections {
+        target: Player
+        function onVideoSizeChanged() {
+            const vw = Player.videoWidth, vh = Player.videoHeight
+            if (vw <= 0 || vh <= 0) return              // 尺寸还没拿到 / 正在换集，保持上一次的比例
+            const a = vw / vh
+            if (a === win.appliedVideoAspect) return
+            win.appliedVideoAspect = a
+            if (win.fitToVideo) win.applyAspect(a)
+        }
     }
 
     // 设置页切换「按片源比例自动调整」：立刻按当前状态重排窗口
