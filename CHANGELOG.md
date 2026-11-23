@@ -2,6 +2,13 @@
 
 本项目的版本变更都记录在这里。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [v0.1.12] - 2026-11-23
+
+### 变更
+
+- 观看历史只收进过全剧界面的剧（点了「查看全集」或打开过选集面板）。信息流里刷过的剧仍然记进度，滑回去能接着看，但不再塞满历史。v0.1.11 里已经记下的信息流剧会从历史里消失
+- 安装包从 205 MB 减到约 118 MB：去掉打包时带进来的、播放器用不到的 Qt 模块（3D、图表、地图、多媒体、浏览器内核等），ffmpeg 换成体积更小的 LGPL 版
+
 ## [v0.1.11] - 2026-11-23
 
 ### 新增
@@ -131,7 +138,8 @@
 - 进度条精准跳转，未缓存的集也能拖到任意位置
 - 选集面板、搜索、观看历史、设置（快捷键、自动连播、最小化暂停、清晰度、倍速等）
 
-[未发布]: https://github.com/LemonYangZW/IHaveApple/compare/v0.1.11...HEAD
+[未发布]: https://github.com/LemonYangZW/IHaveApple/compare/v0.1.12...HEAD
+[v0.1.12]: https://github.com/LemonYangZW/IHaveApple/compare/v0.1.11...v0.1.12
 [v0.1.11]: https://github.com/LemonYangZW/IHaveApple/compare/v0.1.10...v0.1.11
 [v0.1.10]: https://github.com/LemonYangZW/IHaveApple/compare/v0.1.9...v0.1.10
 [v0.1.9]: https://github.com/LemonYangZW/IHaveApple/compare/v0.1.8...v0.1.9

@@ -53,7 +53,8 @@ Rectangle {
         const s = known ? startOf(dramaId) : { ep: 0, pos: 0 }
         const ep = s.ep, pos = s.pos
         currentEp = ep
-        // 占位阶段（剧单未载入）不写观看历史，否则历史里会多一条空记录
+        // 占位阶段（剧单未载入）不写进度，否则会多一条空记录
+        // （进度不等于观看历史：进了全剧界面才进历史，见 onDramaModeChanged）
         if (known) Store.saveProgress(dramaId, ep, pos)
         // 只有「没指定剧」（0 / 空）才等推荐；--drama 3 这类明确指定不要被推荐覆盖
         else if (!(Number(dramaId) >= 1)) awaitingRecommend = true
@@ -108,7 +109,7 @@ Rectangle {
             if (!page.awaitingRecommend || !Backend.recommendId) return
             page.awaitingRecommend = false
             page.dramaId = String(Backend.recommendId)
-            // 正在播放的剧要进观看历史并排在第一位（stage 是本文档里的 id）
+            // 记下首屏这部剧的进度（stage 是本文档里的 id）
             Store.saveProgress(page.dramaId, page.currentEp, stage.position)
         }
     }
@@ -156,6 +157,8 @@ Rectangle {
     //  - 本剧模式：翻本剧的上一集 / 下一集。进过选集面板就一直保持，
     //    直到点返回 / Esc、换剧、切频道或打开搜索 / 历史。第一集 / 最后一集再滚会被拦住。
     property bool dramaMode: false
+    // 进了全剧界面（查看全集 / 选集）才算「在看这部剧」，记进观看历史；信息流里刷过的只记进度
+    onDramaModeChanged: if (dramaMode && dramaKnown) Store.saveProgress(dramaId, currentEp, stage.position, true)
     function stepEpisodeOrDrama(dir) {
         if (!sheet.open && !dramaMode) {
             goDrama(dir)

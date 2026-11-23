@@ -48,13 +48,14 @@ QtObject {
     readonly property string definition: quality === "自动" ? "" : quality.toLowerCase()
 
     // ---------- 观看进度 ----------
-    // dramaId -> { ep, pos, at, title, total, desc }，ep 从 0 开始，at 为最后观看时间（用于历史排序）。
+    // dramaId -> { ep, pos, at, title, total, desc, listed }，ep 从 0 开始，at 为最后观看时间（用于历史排序）。
+    // 信息流里刷到的剧也记进度（滑回去能接着看），但只有进过全剧界面（查看全集 / 选集）的才 listed、进观看历史。
     // 标题 / 集数 / 简介是快照：重启后这部剧多半不在新的推荐流里，靠它把剧并回剧单（Backend.rememberDramas）。
     // 和搜索记录一起存在注册表（QtCore.Settings），升级、重装都不会丢；只有设置页「完全重置」会清掉
     property var progress: ({})
     property var searches: []                // 最近搜索词，新的在前，最多 maxSearches 条
     readonly property int maxSearches: 10
-    readonly property int maxHistory: 300    // 历史最多保留多少部（最久没看的先丢），免得注册表越写越大
+    readonly property int maxHistory: 300    // 进度最多保留多少部（先丢没进历史的、再丢最久没看的），免得注册表越写越大
 
     property Settings records: Settings {
         id: recordsObj
@@ -69,31 +70,35 @@ QtObject {
     Component.onCompleted: {
         progress = parseJson(recordsObj.progressJson, {})
         searches = parseJson(recordsObj.searchesJson, [])
-        Backend.rememberDramas(Object.keys(progress).map(k => ({
+        // 只把观看历史里的剧并回剧单；信息流里刷到的剧下次多半不在推荐流里，用不着
+        Backend.rememberDramas(Object.keys(progress).filter(k => progress[k].listed).map(k => ({
             id: k, title: progress[k].title, total: progress[k].total, desc: progress[k].desc })))
     }
 
     signal toast(string message)
 
     function progressOf(id) { return progress[id] || null }
-    function saveProgress(id, ep, pos) {
+    // list = true：这部剧进观看历史（进了全剧界面时由 PlayerPage 传入）；之后的保存沿用原标记
+    function saveProgress(id, ep, pos, list) {
         const d = MockData.drama(id)
         const old = progress[id] || {}
         const known = d && String(d.id) === String(id)      // 剧单里找不到时 drama() 会退回别的剧，不能拿来当快照
         progress[id] = { ep: ep, pos: pos, at: Date.now(),
                          title: known ? d.title : (old.title || ""),
                          total: known ? d.total : (old.total || 0),
-                         desc: known ? (d.desc || "") : (old.desc || "") }
+                         desc: known ? (d.desc || "") : (old.desc || ""),
+                         listed: !!(list || old.listed) }
         const ids = Object.keys(progress)
         if (ids.length > maxHistory) {
-            ids.sort((a, b) => progress[a].at - progress[b].at)
+            ids.sort((a, b) => (progress[a].listed - progress[b].listed) || (progress[a].at - progress[b].at))
             for (let i = 0; i < ids.length - maxHistory; ++i) delete progress[ids[i]]
         }
         recordsObj.progressJson = JSON.stringify(progress)
     }
-    // 观看历史：最近看过的在前。id 保持字符串（19 位，转成数字会丢精度）
+    // 观看历史：进过全剧界面的剧，最近看过的在前。id 保持字符串（19 位，转成数字会丢精度）
     function history() {
-        return Object.keys(progress).map(k => ({ id: k, at: progress[k].at }))
+        return Object.keys(progress).filter(k => progress[k].listed)
+                                    .map(k => ({ id: k, at: progress[k].at }))
                                     .sort((a, b) => b.at - a.at)
     }
     function clearHistory() {

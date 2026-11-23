@@ -27,6 +27,8 @@ os.environ["QSG_RENDER_LOOP"] = "basic"
 
 APP_NAME = "IHaveApple-records"
 DRAMA = "7700000000000000001"
+FEED = "7700000000000000002"     # 只在信息流里看过
+EPS = "7700000000000000003"      # 打开过选集面板
 PROTO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROTO)
 FAILED = []
@@ -129,9 +131,25 @@ def finish():
 
 
 if PHASE == "write":
-    backend.rememberDramas([{"id": DRAMA, "title": "测试剧", "total": 60, "desc": "简介"}])
+    backend.rememberDramas([{"id": DRAMA, "title": "测试剧", "total": 60, "desc": "简介"},
+                            {"id": FEED, "title": "信息流剧", "total": 30, "desc": ""},
+                            {"id": EPS, "title": "选集剧", "total": 40, "desc": ""}])
     check(ev(win, f"MockData.drama('{DRAMA}').title") == "测试剧", "rememberDramas 后剧单能解析")
+    # 观看历史只收进过全剧界面的剧：信息流里看只记进度
+    ev(win, f"player.open('{FEED}')")
+    check(ev(win, f"Store.progressOf('{FEED}') !== null") is True, "信息流里看的剧记了进度")
+    check(ev(win, "Store.history().length") == 0, "信息流里看的剧不进观看历史")
+    ev(win, f"player.open('{DRAMA}')")
+    ev(win, "player.enterDramaView()")
+    check(ev(win, "Store.history().map(h => h.id).join(',')") == DRAMA, "点「查看全集」后进观看历史",
+          ev(win, "Store.history().map(h => h.id).join(',')"))
+    ev(win, f"player.open('{EPS}')")
+    ev(win, "player.toggleEpisodes()")
+    check(ev(win, f"Store.history().some(h => h.id === '{EPS}')") is True, "打开选集面板后也进观看历史")
+    ev(win, "player.toggleEpisodes()")
+    settle(50)
     ev(win, f"Store.saveProgress('{DRAMA}', 3, 12.5)")
+    check(ev(win, f"Store.progressOf('{DRAMA}').listed") is True, "之后保存进度不会把剧移出历史")
     for i in range(12):
         ev(win, f"Store.addSearch('词{i}')")
     ev(win, "Store.addSearch('  词5 ')")       # 重复的词挪到最前面，不重复记
@@ -160,7 +178,10 @@ elif PHASE == "read":
     check('"ep":3' in (p or "") and "测试剧" in (p or ""), "重启后观看进度还在", p)
     check(ev(win, "Store.searches.length") == 10 and ev(win, "Store.searches[0]") == "回车词", "重启后搜索记录还在",
           ev(win, "Store.searches.join(',')"))
-    check(ev(win, "Store.history()[0].id") == DRAMA, "观看历史列出这部剧")
+    h = ev(win, "Store.history().map(h => h.id).join(',')")
+    check(h == f"{DRAMA},{EPS}", "重启后观看历史还在（最近看的在前，信息流剧不在里面）", h)
+    check(ev(win, f"Store.progressOf('{FEED}') !== null") is True, "信息流剧的进度重启后也在")
+    check(ev(win, f"String((MockData.drama('{FEED}') || {{}}).id)") != FEED, "信息流剧不并回剧单（只并历史里的）")
     check(ev(win, f"MockData.drama('{DRAMA}').title") == "测试剧", "历史里的剧并回剧单（不在推荐流里也能打开）")
     feed = [{"id": "7700000000000000099", "title": "推荐剧", "episode_count": 10, "cover_url": ""}]
     backend._apply_items("推荐", feed)

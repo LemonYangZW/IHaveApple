@@ -290,7 +290,7 @@ Item {
             height: 64
             horizontalAlignment: Text.AlignHCenter
             color: Theme.color.aside
-            text: lib.shownMode === "history" ? "还没有看过的剧"
+            text: lib.shownMode === "history" ? "点「查看全集」看过的剧会记在这里"
                 : lib.query === "" ? "输入剧名搜索"
                 : lib.searching ? "搜索中…"
                 : "没有找到「" + lib.query + "」相关的短剧"

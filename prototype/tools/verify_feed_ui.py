@@ -82,6 +82,7 @@ def launch(run_index):
             state["dramaId"] = str(ev(win, "player.dramaId"))
             # QJSValue 不能直接迭代，走 JSON 转一手
             state["history"] = json.loads(ev(win, "JSON.stringify(Store.history())") or "[]")
+            state["hasProgress"] = ev(win, "Store.progressOf(String(player.dramaId)) !== null")
             state["recommend"] = str(ev(win, "Backend.recommendId"))
             state["warn"] = list(curve_warning)
             # 只拉了推荐那部的分集 → 说明没有先偷偷播第一部
@@ -113,7 +114,9 @@ check(r1.get("dramaId") == r1.get("recommend"), "dramaId 已同步为推荐剧",
 check(len(r1.get("episode_dramas", [])) == 1, "只拉了推荐那一部的分集（没先播第一部）",
       str(r1.get("episode_dramas")))
 hist_ids = [str(h["id"]) for h in (r1.get("history") or [])]
-check(r1.get("recommend") in hist_ids, "推荐剧进入观看历史", str(hist_ids))
+# 首屏推荐剧记进度（信息流里滑回来能接着看），但没进全剧界面，不进观看历史
+check(r1.get("hasProgress") is True, "推荐剧记了观看进度")
+check(r1.get("recommend") not in hist_ids, "只在信息流里看的剧不进观看历史", str(hist_ids))
 qml_err = [w for w in r1.get("warn", []) if "ReferenceError" in w or "is not defined" in w
            or "TypeError" in w]
 check(not qml_err, "无 QML 报错", str(qml_err[:2]))
