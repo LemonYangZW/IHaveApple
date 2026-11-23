@@ -246,20 +246,14 @@ Item {
                     Label { width: parent.width; role: Theme.type.body; text: "缓存占用" }
                     Label { width: parent.width; role: Theme.type.caption; color: Theme.color.aside; text: Backend.cacheSizeText }
                 }
-                IhaButton {
+                ConfirmButton {
                     id: clearCacheButton
-                    property bool confirming: false
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
-                    text: Backend.cacheBusy ? "清理中…" : confirming ? "确认清理" : "清理"
+                    label: Backend.cacheBusy ? "清理中…" : "清理"
+                    confirmLabel: "确认清理"
                     enabled: !Backend.cacheBusy
-                    onClicked: {
-                        if (!confirming) { confirming = true; cacheConfirm.restart(); return }
-                        confirming = false
-                        Backend.clearCache()
-                    }
-                    inkColor: confirming ? Theme.color.danger : Theme.color.subtitle
-                    Timer { id: cacheConfirm; interval: 3000; onTriggered: clearCacheButton.confirming = false }
+                    onConfirmed: Backend.clearCache()
                 }
             }
             Label {
@@ -272,29 +266,28 @@ Item {
 
             // ---------- 数据 ----------
             SectionTitle { text: "数据" }
-            Item {
-                width: parent.width
-                height: 56
-                Label {
-                    anchors.verticalCenter: parent.verticalCenter
-                    role: Theme.type.body
-                    text: "观看历史"
-                }
-                IhaButton {
-                    id: clearButton
-                    property bool confirming: false
-                    anchors.right: parent.right
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: confirming ? "确认清空" : "清空"
-                    onClicked: {
-                        if (!confirming) { confirming = true; confirmTimer.restart(); return }
-                        confirming = false
-                        Store.clearHistory()
-                        Store.toast("观看历史已清空")
-                    }
-                    inkColor: confirming ? Theme.color.danger : Theme.color.subtitle
-                    Timer { id: confirmTimer; interval: 3000; onTriggered: clearButton.confirming = false }
-                }
+            DataRow {
+                title: "观看历史"
+                note: "看过的剧和每部看到第几集，升级后保留"
+                label: "清空"
+                confirmLabel: "确认清空"
+                onConfirmed: { Store.clearHistory(); Store.toast("观看历史已清空") }
+            }
+            DataRow {
+                title: "搜索记录"
+                note: Store.searches.length > 0 ? "最近 " + Store.searches.length + " 条（最多保留 " + Store.maxSearches + " 条）"
+                                                 : "暂无"
+                label: "清空"
+                confirmLabel: "确认清空"
+                enabled: Store.searches.length > 0
+                onConfirmed: { Store.clearSearches(); Store.toast("搜索记录已清空") }
+            }
+            DataRow {
+                title: "完全重置"
+                note: "清除所有设置、观看历史、搜索记录、封面和视频缓存，然后重新打开播放器"
+                label: "重置"
+                confirmLabel: "确认重置"
+                onConfirmed: Backend.resetAll()
             }
 
             // ---------- 关于 ----------
@@ -370,6 +363,59 @@ Item {
     }
 
     // ---------- 行组件 ----------
+    // 清理类按钮：第一次点变成红色「确认…」，3 秒内再点一次才执行，防误触
+    component ConfirmButton: IhaButton {
+        id: cb
+        property string label
+        property string confirmLabel
+        property bool confirming: false
+        signal confirmed()
+        text: confirming ? confirmLabel : label
+        inkColor: confirming ? Theme.color.danger : Theme.color.subtitle
+        onClicked: {
+            if (!confirming) { confirming = true; cbTimer.restart(); return }
+            confirming = false
+            confirmed()
+        }
+        onEnabledChanged: if (!enabled) confirming = false
+        Timer { id: cbTimer; interval: 3000; onTriggered: cb.confirming = false }
+    }
+
+    // 「数据」分区的一行：标题 + 说明，右侧一个需二次确认的按钮
+    component DataRow: Item {
+        id: dr
+        property string title
+        property string note
+        property alias label: drButton.label
+        property alias confirmLabel: drButton.confirmLabel
+        signal confirmed()
+        width: parent ? parent.width : 0
+        height: Math.max(56, drTexts.implicitHeight + Theme.space.sm * 2)
+        Column {
+            id: drTexts
+            anchors.left: parent.left
+            anchors.right: drButton.left
+            anchors.rightMargin: Theme.space.md
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 2
+            Label { width: parent.width; role: Theme.type.body; text: dr.title }
+            Label {
+                width: parent.width
+                visible: text !== ""
+                role: Theme.type.caption
+                color: Theme.color.aside
+                wrapMode: Text.WordWrap
+                text: dr.note
+            }
+        }
+        ConfirmButton {
+            id: drButton
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            onConfirmed: dr.confirmed()
+        }
+    }
+
     component SectionTitle: Label {
         width: parent ? parent.width : 0
         topPadding: Theme.space.lg

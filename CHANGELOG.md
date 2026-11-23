@@ -2,6 +2,17 @@
 
 本项目的版本变更都记录在这里。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [v0.1.11] - 2026-11-23
+
+### 新增
+
+- 搜索记录：保留最近 10 次搜索（回车、点了搜索结果或点记录重搜才算，边打字边出的中间词不记），搜索框为空时显示在面板里，点一条直接重新搜；面板和设置页都能清空
+- 设置 → 数据 →「完全重置」：二次确认后退出播放器，清掉所有设置、观看历史、搜索记录、封面 / 推荐列表 / 视频缓存、首帧图、下载过的更新安装包和片源服务的匿名身份，然后重新打开一个干净的播放器
+
+### 修复
+
+- 观看历史重启就没了（只存在内存里），升级安装后自然也丢失。现在和设置一起存进注册表，升级、重装都会保留（最多 300 部，最久没看的先丢）；历史里的剧即使不在当前推荐流里，也能显示标题、封面并续播
+
 ## [v0.1.10] - 2026-11-23
 
 ### 变更
@@ -120,7 +131,8 @@
 - 进度条精准跳转，未缓存的集也能拖到任意位置
 - 选集面板、搜索、观看历史、设置（快捷键、自动连播、最小化暂停、清晰度、倍速等）
 
-[未发布]: https://github.com/LemonYangZW/IHaveApple/compare/v0.1.10...HEAD
+[未发布]: https://github.com/LemonYangZW/IHaveApple/compare/v0.1.11...HEAD
+[v0.1.11]: https://github.com/LemonYangZW/IHaveApple/compare/v0.1.10...v0.1.11
 [v0.1.10]: https://github.com/LemonYangZW/IHaveApple/compare/v0.1.9...v0.1.10
 [v0.1.9]: https://github.com/LemonYangZW/IHaveApple/compare/v0.1.8...v0.1.9
 [v0.1.8]: https://github.com/LemonYangZW/IHaveApple/compare/v0.1.7...v0.1.8

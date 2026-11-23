@@ -1,6 +1,7 @@
 pragma Singleton
 import QtQuick
 import QtCore
+import IHaveApple 1.0
 
 // 可变的播放状态：观看进度、播放设置和用户设置。
 QtObject {
@@ -47,20 +48,71 @@ QtObject {
     readonly property string definition: quality === "自动" ? "" : quality.toLowerCase()
 
     // ---------- 观看进度 ----------
-    // dramaId -> { ep, pos, at }，ep 从 0 开始，at 为最后观看时间（用于历史排序）。
-    // 演示数据：剧 1 上次看到第 12 集
+    // dramaId -> { ep, pos, at, title, total, desc }，ep 从 0 开始，at 为最后观看时间（用于历史排序）。
+    // 标题 / 集数 / 简介是快照：重启后这部剧多半不在新的推荐流里，靠它把剧并回剧单（Backend.rememberDramas）。
+    // 和搜索记录一起存在注册表（QtCore.Settings），升级、重装都不会丢；只有设置页「完全重置」会清掉
     property var progress: ({})
+    property var searches: []                // 最近搜索词，新的在前，最多 maxSearches 条
+    readonly property int maxSearches: 10
+    readonly property int maxHistory: 300    // 历史最多保留多少部（最久没看的先丢），免得注册表越写越大
+
+    property Settings records: Settings {
+        id: recordsObj
+        category: "records"
+        property string progressJson: "{}"
+        property string searchesJson: "[]"
+    }
+
+    function parseJson(text, fallback) {
+        try { return JSON.parse(text) || fallback } catch (e) { return fallback }
+    }
+    Component.onCompleted: {
+        progress = parseJson(recordsObj.progressJson, {})
+        searches = parseJson(recordsObj.searchesJson, [])
+        Backend.rememberDramas(Object.keys(progress).map(k => ({
+            id: k, title: progress[k].title, total: progress[k].total, desc: progress[k].desc })))
+    }
 
     signal toast(string message)
 
     function progressOf(id) { return progress[id] || null }
-    function saveProgress(id, ep, pos) { progress[id] = { ep: ep, pos: pos, at: Date.now() } }
+    function saveProgress(id, ep, pos) {
+        const d = MockData.drama(id)
+        const old = progress[id] || {}
+        const known = d && String(d.id) === String(id)      // 剧单里找不到时 drama() 会退回别的剧，不能拿来当快照
+        progress[id] = { ep: ep, pos: pos, at: Date.now(),
+                         title: known ? d.title : (old.title || ""),
+                         total: known ? d.total : (old.total || 0),
+                         desc: known ? (d.desc || "") : (old.desc || "") }
+        const ids = Object.keys(progress)
+        if (ids.length > maxHistory) {
+            ids.sort((a, b) => progress[a].at - progress[b].at)
+            for (let i = 0; i < ids.length - maxHistory; ++i) delete progress[ids[i]]
+        }
+        recordsObj.progressJson = JSON.stringify(progress)
+    }
     // 观看历史：最近看过的在前。id 保持字符串（19 位，转成数字会丢精度）
     function history() {
         return Object.keys(progress).map(k => ({ id: k, at: progress[k].at }))
                                     .sort((a, b) => b.at - a.at)
     }
-    function clearHistory() { progress = ({}) }
+    function clearHistory() {
+        progress = ({})
+        recordsObj.progressJson = "{}"
+    }
+
+    // ---------- 搜索记录 ----------
+    // 只记「确认过」的搜索（回车或点了结果），边打字边出的中间词（「死」「死考」）不记
+    function addSearch(q) {
+        q = String(q || "").trim()
+        if (!q) return
+        searches = [q].concat(searches.filter(s => s !== q)).slice(0, maxSearches)
+        recordsObj.searchesJson = JSON.stringify(searches)
+    }
+    function clearSearches() {
+        searches = []
+        recordsObj.searchesJson = "[]"
+    }
 
     // ---------- 快捷键（第 6.1 节） ----------
     // Esc 固定用于逐层关闭，不可修改

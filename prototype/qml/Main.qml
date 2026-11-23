@@ -438,6 +438,11 @@ ApplicationWindow {
         target: Store
         function onToast(message) { toast.show(message) }
     }
+    // 设置页「完全重置」：退出程序，退出后 main.py 清掉所有数据并重新打开（运行中清会被 Settings 写回）
+    Connections {
+        target: Backend
+        function onResetRequested() { win.quitApp() }
+    }
 
     // 仅原型：Ctrl+Shift+D 打开状态演示面板
     DemoPanel {

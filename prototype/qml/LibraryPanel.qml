@@ -54,6 +54,19 @@ Item {
     }
     function close() { mode = ""; field.focus = false }
     function toggle(m) { mode === m ? close() : show(m) }
+    // 选中一部剧：从搜索结果里选的，这次搜索算「确认过」，记进搜索记录
+    function choose(dramaId) {
+        if (shownMode === "search") Store.addSearch(query)
+        pick(dramaId)
+    }
+    // 点搜索记录：填回搜索框重新搜（同时把它挪到记录最前面）
+    function searchAgain(q) {
+        field.text = q
+        Store.addSearch(q)
+        field.forceActiveFocus()
+    }
+    // 搜索框为空时显示最近搜索
+    readonly property bool showRecent: shownMode === "search" && query === "" && Store.searches.length > 0
 
     function detailOf(dramaId) {
         const d = MockData.drama(dramaId)
@@ -119,8 +132,11 @@ Item {
                 selectionColor: Theme.color.crabappleDeep
                 selectedTextColor: Theme.color.subtitle
                 Accessible.name: "搜索剧名"
-                // 回车直接播放第一个结果
-                onAccepted: if (lib.results.length > 0) lib.pick(String(lib.results[0].id))
+                // 回车直接播放第一个结果（还没出结果时也记下这次搜索）
+                onAccepted: {
+                    Store.addSearch(lib.query)
+                    if (lib.results.length > 0) lib.pick(String(lib.results[0].id))
+                }
 
                 background: Rectangle {
                     radius: Theme.radius.md
@@ -188,13 +204,86 @@ Item {
                 drama: MockData.drama(modelData.id)
                 detail: lib.detailOf(modelData.id)
                 current: String(modelData.id) === String(lib.currentDrama)
-                onClicked: lib.pick(String(modelData.id))
+                onClicked: lib.choose(String(modelData.id))
+            }
+        }
+
+        // ---- 最近搜索（搜索框为空时）：点一条重新搜 ----
+        Column {
+            visible: lib.showRecent
+            anchors.top: header.bottom
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.leftMargin: Theme.space.md
+            anchors.rightMargin: Theme.space.md
+            spacing: Theme.space.sm
+
+            Item {
+                width: parent.width
+                height: clearRecent.height
+                Label {
+                    anchors.verticalCenter: parent.verticalCenter
+                    role: Theme.type.caption
+                    color: Theme.color.aside
+                    text: "最近搜索"
+                }
+                T.AbstractButton {
+                    id: clearRecent
+                    anchors.right: parent.right
+                    height: 28
+                    width: clearLabel.implicitWidth + Theme.space.sm * 2
+                    Accessible.name: "清空搜索记录"
+                    onClicked: Store.clearSearches()
+                    contentItem: Label {
+                        id: clearLabel
+                        role: Theme.type.caption
+                        horizontalAlignment: Text.AlignHCenter
+                        verticalAlignment: Text.AlignVCenter
+                        color: clearRecent.hovered ? Theme.color.subtitle : Theme.color.aside
+                        text: "清空"
+                    }
+                    background: Rectangle {
+                        radius: Theme.radius.md
+                        color: clearRecent.hovered ? Theme.color.subtitle08 : "transparent"
+                        FocusRing { target: clearRecent }
+                    }
+                }
+            }
+
+            Flow {
+                width: parent.width
+                spacing: Theme.space.xs
+                Repeater {
+                    model: Store.searches
+                    delegate: T.AbstractButton {
+                        id: chip
+                        required property string modelData
+                        height: 30
+                        width: Math.min(chipLabel.implicitWidth + Theme.space.md * 2, parent.width)
+                        Accessible.name: "搜索 " + modelData
+                        onClicked: lib.searchAgain(modelData)
+                        contentItem: Label {
+                            id: chipLabel
+                            role: Theme.type.caption
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
+                            color: Theme.color.subtitle
+                            text: chip.modelData
+                        }
+                        background: Rectangle {
+                            radius: height / 2
+                            color: chip.hovered ? Theme.color.subtitle14 : Theme.color.subtitle08
+                            Behavior on color { ColorAnimation { duration: Theme.motion.fast } }
+                            FocusRing { target: chip; targetRadius: height / 2 }
+                        }
+                    }
+                }
             }
         }
 
         // ---- 空状态 ----
         Label {
-            visible: lib.items.length === 0
+            visible: lib.items.length === 0 && !lib.showRecent
             anchors.top: header.bottom
             anchors.left: parent.left
             anchors.right: parent.right

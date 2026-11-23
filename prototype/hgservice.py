@@ -20,6 +20,7 @@ import random
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -27,7 +28,7 @@ import urllib.parse
 import urllib.request
 from queue import Empty, Queue
 
-from PySide6.QtCore import Property, QObject, QSettings, Signal, Slot
+from PySide6.QtCore import Property, QCoreApplication, QObject, QSettings, QStandardPaths, Signal, Slot
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # 打包版（PyInstaller）：SDK 在 exe 旁边的 hgd/、ffmpeg 在 ffmpeg/；开发时用 hongguo 工程里的 SDK。
@@ -378,10 +379,14 @@ class HgService(QObject):
     searchResults = Signal(str, list)         # query, [{id,title,total,covers,desc}]
     cacheChanged = Signal()                   # 缓存目录 / 占用 / 忙闲状态变了
     postersChanged = Signal()                 # 有新的首帧图（或缓存目录换了 / 清空了）
+    resetRequested = Signal()                 # 完全重置：界面退出程序，退出后由 main.py 清理并重启
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._dramas = []
+        # 剧单之外认识的剧（观看历史里的、搜过的）：id -> 剧单条目。
+        # 切频道 / 刷新时剧单整个换成新频道的，这些要接在后面，历史和搜索结果才解析得到
+        self._known = {}
         self._episodes = {}      # dramaId -> [ {id, number, label, duration, url, state} ]
         self._fetching = set()   # 正在拉分集的剧 id（避免同一部并发拉两次）
         self._lock = threading.Lock()
@@ -403,6 +408,7 @@ class HgService(QObject):
         self._preload_queue = [] # 预载队列 [(dramaId, ep, definition)]，按播放页给的顺序逐个落盘
         self._preloading = False # 预载线程是否在跑
         self._poster_rev = 0     # 首帧图版本号：QML 绑定读它，有新图时 +1 让 posterOf 重新求值
+        self.reset_requested = False   # 设置页点了「完全重置」：main.py 在退出后清理并重启
         self._current_drama = "" # 最近一次准备播放的剧（用于记录 _channel_last）
         # 缓存位置（设置页可改）：封面、推荐列表、视频各一个子目录
         self._cache_root = _cache_root_from_settings()
@@ -773,6 +779,48 @@ class HgService(QObject):
             self.refreshCacheSize()
             self.cacheChanged.emit()
 
+    # ---------- 完全重置 ----------
+    @Slot()
+    def resetAll(self):
+        """设置页「完全重置」：先让界面退出，真正的清理在退出后由 main.py 调 wipe_all()。
+        不能在运行中清：QML 的 Settings 析构时会把没写完的值刷回注册表，清了也会被写回来。"""
+        self.reset_requested = True
+        self.resetRequested.emit()
+
+    def wipe_all(self):
+        """删除本软件的所有缓存和数据：设置、观看历史、搜索记录（注册表）、封面 / 推荐列表 / 视频缓存、
+        首帧图、QML 编译缓存、下载的更新安装包，以及片源服务的匿名设备身份。调用前 QML 引擎必须已销毁。"""
+        self._stop_service()                # ohgd 握着视频文件和身份文件
+        dirs = [_default_cache_root()]
+        root = os.path.normcase(os.path.abspath(self._cache_root))
+        if root != os.path.normcase(os.path.abspath(_default_cache_root())):
+            # 自选的缓存目录里可能有用户自己的文件：只删我们建的三个子目录
+            dirs += list(_cache_subdirs(self._cache_root))
+        app_data = QStandardPaths.writableLocation(QStandardPaths.AppLocalDataLocation)
+        if app_data and os.path.basename(os.path.normpath(app_data)) == QCoreApplication.applicationName():
+            dirs.append(app_data)           # QML 编译缓存等；名字对不上（应用名没设）就不删，免得删到上级目录
+        dirs.append(os.path.join(tempfile.gettempdir(), "IHaveApple-update"))
+        files = []
+        if FROZEN:
+            # 安装版：程序目录下片源服务的缓存和匿名身份（开发时 SDK 目录是另一个工程，不碰）
+            dirs += [os.path.join(SDK_DIR, "cache"), os.path.join(APP_DIR, ".cache"),
+                     os.path.join(APP_DIR, "_internal", ".cache")]
+            if os.path.isdir(SDK_DIR):
+                files += [os.path.join(SDK_DIR, f) for f in os.listdir(SDK_DIR)
+                          if (f.startswith("anonymous") and f.endswith(".json")) or f == "actor_id.txt"]
+        for d in dirs:
+            if d and os.path.isdir(d):
+                shutil.rmtree(d, ignore_errors=True)
+        for f in files:
+            try:
+                os.remove(f)
+            except OSError as e:
+                print(f"[sdk] 重置时删除失败 {f}: {e}", flush=True)
+        s = QSettings()
+        s.clear()
+        s.sync()
+        print("[sdk] 已完全重置：" + "；".join(dirs + files), flush=True)
+
     def _fetch_feed(self, ch, cursor=""):
         """请求 feed 的一页，返回 (items, cursor, has_more)。
 
@@ -959,7 +1007,9 @@ class HgService(QObject):
         else:
             rec = ids[0] if ids else ""
         with self._lock:
-            self._dramas = out
+            # 历史 / 搜索认识的剧接在频道剧单后面（滚动换剧只按 _feed_ids 走，不受影响）
+            in_feed = set(ids)
+            self._dramas = out + [d for sid, d in self._known.items() if sid not in in_feed]
             self._recommend = rec
             self._feed_ids = list(ids)
         print(f"[sdk] feed ready: {len(out)} 部（{ch}），推荐 {rec}", flush=True)
@@ -1193,6 +1243,7 @@ class HgService(QObject):
                     "desc": s.get("description", ""),
                 }
                 items.append(drama)
+                self._known.setdefault(sid, drama)
                 # 并入剧单：MockData.drama(id) 才能解析到它，播放页直接可 open
                 if sid not in known:
                     known.add(sid)
@@ -1204,6 +1255,35 @@ class HgService(QObject):
         self._backfill_covers_async()
 
     # ---------- 封面 ----------
+    @Slot(list)
+    def rememberDramas(self, items):
+        """启动时把观看历史里的剧并入剧单（历史只存了快照：id / 标题 / 集数 / 简介）。
+        不在当前推荐流里的剧也解析得到，打开即可续播；封面已缓存的直接用，其余后台按 id 补。"""
+        added = 0
+        with self._lock:
+            have = {d["id"] for d in self._dramas}
+            for it in items or []:
+                sid = str(it.get("id") or "")
+                if not sid or sid in self._known:
+                    continue
+                cover = os.path.join(self._cover_dir, f"{sid}.jpg")
+                drama = {
+                    "id": sid,
+                    "title": it.get("title") or "",
+                    "total": int(it.get("total") or 0),
+                    "covers": list(COVER_PAIRS[len(self._known) % len(COVER_PAIRS)]),
+                    "cover": _file_url(cover) if os.path.exists(cover) else "",
+                    "cover_url": "",
+                    "desc": it.get("desc") or "",
+                }
+                self._known[sid] = drama
+                if sid not in have:
+                    self._dramas = self._dramas + [drama]
+                    added += 1
+        if added:
+            self.dramasChanged.emit()
+            self._backfill_covers_async()
+
     def _backfill_covers_async(self, limit=None):
         with self._lock:
             if self._covering:

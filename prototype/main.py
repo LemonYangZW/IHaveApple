@@ -12,8 +12,11 @@
 import argparse
 import ctypes
 import os
+import subprocess
 import sys
 from pathlib import Path
+
+import shiboken6
 
 from PySide6.QtCore import QSettings, QTimer, QUrl
 from PySide6.QtGui import QFontDatabase, QGuiApplication, QIcon
@@ -187,7 +190,20 @@ def main() -> int:
     rc = app.exec()
     player.shutdown()
     backend.shutdown()
+    if backend.reset_requested:
+        # 完全重置：先销毁 QML 引擎 —— QML 的 Settings 析构时会把没写完的值刷回注册表，
+        # 要等它刷完再清，否则刚清掉的设置又被写回来。清完重新打开一个干净的播放器
+        shiboken6.delete(engine)
+        backend.wipe_all()
+        relaunch()
     return rc
+
+
+def relaunch():
+    """以同样的参数重新启动播放器（打包版是 IHaveApple.exe，开发时是 python main.py）。"""
+    args = [sys.executable] + ([] if getattr(sys, "frozen", False) else [str(Path(__file__).resolve())]) + sys.argv[1:]
+    flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    subprocess.Popen(args, cwd=str(ROOT), creationflags=flags, close_fds=True)
 
 
 if __name__ == "__main__":
