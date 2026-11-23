@@ -95,6 +95,12 @@ Item {
             // ---------- 窗口 ----------
             SectionTitle { text: "窗口" }
             ToggleRow {
+                title: "窗口按片源比例自动调整"
+                note: "启动时按画面比例定窗口大小：竖屏保持 9:16，横屏自动拉宽"
+                checked: Store.prefs.fitWindow
+                onClicked: Store.prefs.fitWindow = !Store.prefs.fitWindow
+            }
+            ToggleRow {
                 title: "窗口置顶"
                 note: "和其他软件并排时，播放窗口始终在最前面"
                 checked: Store.prefs.alwaysOnTop

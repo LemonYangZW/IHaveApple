@@ -19,6 +19,7 @@ QtObject {
         property real speed: 1.0               // 跨集、跨剧保留
         property real volume: 0.8
         // 窗口
+        property bool fitWindow: true          // 启动 / 换剧时按片源比例调整窗口（竖屏 9:16，横屏自动拉宽）
         property bool alwaysOnTop: false
         property string closeAction: "quit"    // 关闭窗口时：quit 退出程序 | tray 最小化到托盘
         property bool trayHintShown: false     // 第一次最小化到托盘时的系统通知只显示一次

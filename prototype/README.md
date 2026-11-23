@@ -44,6 +44,7 @@ python main.py --drama 3     # 指定播放第 3 部
 | `--page` | 演示状态：`player`（默认）`episodes` `search` `history` `settings` `end` `error` `offline` `immersive` |
 | `--size 540x960` | 指定初始窗口尺寸（调试用，非 9:16 时画面两侧会留黑）；不传则按 9:16 自动确定 |
 | `--shot out.png` | 22 秒后截图并退出 |
+| `--screen 1` | 在第 N 块显示器上居中启动（0 起，多屏时把播放器放到副屏） |
 | `--reduced-motion` | 强制按"减少动画"模式运行（默认读取 Windows 系统设置） |
 
 ### 频道

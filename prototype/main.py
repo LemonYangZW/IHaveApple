@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import QSettings, QTimer, QUrl
-from PySide6.QtGui import QFontDatabase, QIcon
+from PySide6.QtGui import QFontDatabase, QGuiApplication, QIcon
 from PySide6.QtQml import QQmlApplicationEngine, qmlRegisterSingletonType, qmlRegisterType
 from PySide6.QtQuickControls2 import QQuickStyle
 from PySide6.QtWidgets import QApplication
@@ -54,8 +54,51 @@ def parse_args():
     p.add_argument("--drama", default="0", help="剧序号（1 起）/ 剧 id；留空则首屏推荐")
     p.add_argument("--size", default="", help="如 1440x900，留空则自动")
     p.add_argument("--shot", default="")
+    # 多屏时把播放器放到副屏用（编号来自系统排列顺序，0 起）
+    p.add_argument("--screen", type=int, default=-1, help="在第 N 块显示器上居中启动（0 起）")
     p.add_argument("--reduced-motion", action="store_true")
     return p.parse_args()
+
+
+def ensure_on_screen(window):
+    """窗口矩形和所有屏幕都不相交时（被摆到已拔掉的显示器上），移回主屏中央。
+
+    进程、声音都还在，只是窗口看不见——拔掉副屏 / 远程桌面断开后最容易出现。
+    只要还有一块屏幕能容下窗口就不动它，避免每次启动都把用户摆好的位置挪走。
+    """
+    geom = window.geometry()
+    for s in QGuiApplication.screens():
+        inter = geom.intersected(s.availableGeometry())
+        if inter.width() >= 80 and inter.height() >= 80:
+            return
+    target = window.screen() or QGuiApplication.primaryScreen()
+    if target is None:
+        return
+    avail = target.availableGeometry()
+    aspect = window.property("windowAspect") or 9 / 16
+    h = min(geom.height(), avail.height())
+    w = min(round(h * aspect), avail.width())
+    h = min(h, round(w / aspect))
+    window.setGeometry(avail.x() + (avail.width() - w) // 2,
+                       avail.y() + (avail.height() - h) // 2, w, h)
+    print(f"[win] 窗口不在任何屏幕上，已居中到主屏 {w}x{h}", flush=True)
+
+
+def place_on_screen(window, index):
+    """把窗口居中放到指定编号的显示器上（多屏时用 --screen 1 把播放器挪到副屏）。"""
+    screens = QGuiApplication.screens()
+    if not 0 <= index < len(screens):
+        print(f"[win] 没有编号为 {index} 的显示器（共 {len(screens)} 块），按默认位置显示", flush=True)
+        return
+    s = screens[index]
+    avail = s.availableGeometry()
+    aspect = window.property("windowAspect") or 9 / 16
+    h = min(round(avail.height() * 0.9), 960)
+    w = min(round(h * aspect), avail.width())
+    h = min(h, round(w / aspect))
+    window.setGeometry(avail.x() + (avail.width() - w) // 2,
+                       avail.y() + (avail.height() - h) // 2, w, h)
+    print(f"[win] 已居中到显示器 {index}（{s.name()}）{w}x{h}", flush=True)
 
 
 def main() -> int:
@@ -117,6 +160,11 @@ def main() -> int:
     # 等比缩放（Windows）：窗口有 winId 之后才能子类化窗口过程，所以放在 load 之后。
     # 锁定比例由 Main.qml 的 windowAspectRequested 信号驱动（「窗口适配视频比例」会改它）。
     window = engine.rootObjects()[0]
+    ensure_on_screen(window)
+    if args.screen >= 0:
+        place_on_screen(window, args.screen)
+    # 显示器变化（拔掉副屏 / 远程桌面断开）后重新兜底，别让窗口留在已经消失的屏幕上
+    app.screenRemoved.connect(lambda _s: QTimer.singleShot(0, lambda: ensure_on_screen(window)))
     aspect_hook = install_aspect_resize(window, 9 / 16, 640)  # noqa: F841
     if aspect_hook is not None:
         window.windowAspectRequested.connect(aspect_hook.set_aspect)

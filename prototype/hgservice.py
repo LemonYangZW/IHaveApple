@@ -66,7 +66,8 @@ COVER_WORKERS = 4
 # 推荐池：一次 feed 单页（实测 9 部）全部收入，首屏从里面挑一部推荐。
 # 不逐部预拉分集：feed 自带 episode_count，分集在真正要播时才拉（见 _prepare），
 # 这样启动只花一次 feed 请求，比「4 部 × 每部拉分集」快得多。
-MAX_DRAMAS = 12
+FEED_MAX = 240        # 推荐流累积上限（每页 6 部，滚到末尾自动续页）
+FEED_MORE_AT = 3      # 离末尾还剩几部时开始续页
 # 分集一次全取（接口本身一次返回全部）；这个上限只是防御，免得异常数据撑爆内存
 EPISODES_PER_SERIES = 800
 
@@ -271,6 +272,7 @@ class HgService(QObject):
         self._channel = self._saved_channel()
         self._feed_cache = {}    # channel -> {items, ts}；有它切频道就不用等 4–5 秒
         self._feed_inflight = {} # channel -> Event：同频道的并发请求合并成一次
+        self._more_inflight = set()  # 正在续页的频道（同一频道只续一次，避免连点叠请求）
         self._warming = False    # 是否已有预热线程在跑（避免重复预热）
         self._covering = False   # 是否已有封面补全在跑（避免两批抢同一批剧）
         self._cover_again = False  # 期间又有新剧要补，等当前批结束后再来一轮
@@ -397,6 +399,17 @@ class HgService(QObject):
     def feedIds(self):
         return self._feed_ids
 
+    # 推荐流还能不能继续往后续页（滚动到末尾附近时 QML 据此提前拉下一页）
+    @Property(bool, notify=dramasChanged)
+    def feedHasMore(self):
+        entry = self._feed_cache.get(self._channel) or {}
+        return bool(entry.get("has_more")) and len(entry.get("items") or []) < FEED_MAX
+
+    # 离末尾还剩几部时开始续页（QML 用这个值判断，前后端口径一致）
+    @Property(int, constant=True)
+    def feedMoreAt(self):
+        return FEED_MORE_AT
+
     @Slot()
     def ensureCovers(self):
         """补齐所有剧的封面。启动时只转前几张，打开搜索 / 历史页面时再补齐剩下的。"""
@@ -444,7 +457,9 @@ class HgService(QObject):
                     d = json.load(f)
                 items = d.get("items") or []
                 # 空 items 也缓存：无内容的频道（AI剧）不该每次切过去都等一次请求
-                self._feed_cache[ch] = {"items": items, "ts": float(d.get("ts") or 0)}
+                self._feed_cache[ch] = {"items": items, "ts": float(d.get("ts") or 0),
+                                        "cursor": str(d.get("cursor") or ""),
+                                        "has_more": bool(d.get("has_more"))}
                 if d.get("last"):
                     self._channel_last[ch] = str(d["last"])
             except Exception as e:
@@ -459,14 +474,22 @@ class HgService(QObject):
             tmp = self._cache_path(ch) + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump({"items": entry["items"], "ts": entry["ts"],
+                           "cursor": entry.get("cursor", ""),
+                           "has_more": bool(entry.get("has_more")),
                            "last": self._channel_last.get(ch, "")}, f, ensure_ascii=False)
             os.replace(tmp, self._cache_path(ch))
         except Exception as e:
             print(f"[sdk] feed 缓存写入失败 {ch}: {e}", flush=True)
 
-    def _fetch_feed(self, ch):
-        """请求一个频道的 feed，返回 items。空频道（上游不认）返回 []，其他错误抛出。"""
+    def _fetch_feed(self, ch, cursor=""):
+        """请求 feed 的一页，返回 (items, cursor, has_more)。
+
+        cursor 为空是第一页；续页把它原样带回去（服务端游标，不能自己拼）。
+        空频道（上游不认）返回 ([], "", False)，其他错误抛出。
+        """
         path = "/v1/feed?channel=" + urllib.parse.quote(ch)
+        if cursor:
+            path += "&cursor=" + urllib.parse.quote(cursor)
         try:
             # feed 一次要 4–5 秒，重试 4 次会把「无内容频道」拖成 9 秒；
             # 只重试一次，失败交给上层用缓存兜底
@@ -477,11 +500,11 @@ class HgService(QObject):
             try:
                 if isinstance(e, urllib.error.HTTPError) and e.code == 502:
                     if "unknown discover channel" in e.read().decode("utf-8", "replace"):
-                        return []
+                        return [], "", False
             except Exception:
                 pass
             raise
-        return feed.get("items") or []
+        return feed.get("items") or [], feed.get("cursor") or "", bool(feed.get("has_more"))
 
     def _fetch_feed_shared(self, ch):
         """同一个频道只发一次请求：预热和用户切换撞在一起时，后者等前者的结果。
@@ -502,8 +525,15 @@ class HgService(QObject):
                 entry = self._feed_cache.get(ch)
             return (entry or {}).get("items") or []
         try:
-            items = self._fetch_feed(ch)
-            self._feed_cache[ch] = {"items": items, "ts": time.time()}
+            items, cursor, has_more = self._fetch_feed(ch)
+            with self._lock:
+                old_items = (self._feed_cache.get(ch) or {}).get("items") or []
+                if old_items:
+                    # 刷新时保留已经续过的页：新首页排在最前，旧的按原顺序接在后面
+                    seen = {s.get("id") for s in items}
+                    items = (items + [s for s in old_items if s.get("id") not in seen])[:FEED_MAX]
+                self._feed_cache[ch] = {"items": items, "ts": time.time(),
+                                        "cursor": cursor, "has_more": bool(has_more)}
             self._save_feed_cache(ch)
             return items
         finally:
@@ -511,20 +541,81 @@ class HgService(QObject):
                 self._feed_inflight.pop(ch, None)
             ev.set()
 
+    # ---------- 推荐流续页 ----------
+    @Slot()
+    def loadMore(self):
+        """QML：离推荐流末尾不远了，后台续一页（不阻塞画面）。"""
+        threading.Thread(target=self._more, daemon=True).start()
+
+    def _more(self, channel=None):
+        """往当前频道的推荐流末尾续一页。
+
+        服务端游标会随会话 / 时间失效：失败时保留游标下次再试，成功后换成新游标。
+        重复的剧按 id 去掉（实测相邻页会有重叠），只追加新的。
+        """
+        ch = channel if channel is not None else self._channel
+        with self._lock:
+            entry = self._feed_cache.get(ch)
+            if not entry or not entry.get("has_more") or not entry.get("cursor"):
+                return
+            if ch in self._more_inflight:
+                return
+            self._more_inflight.add(ch)
+        try:
+            self.ensure_service()
+            page, next_cursor, has_more = self._fetch_feed(ch, entry.get("cursor") or "")
+            with self._lock:
+                entry = self._feed_cache.get(ch) or entry    # 期间可能被后台刷新换成了新字典
+                known = {s.get("id") for s in (entry.get("items") or [])}
+                fresh = [s for s in page if s.get("id") and s.get("id") not in known]
+                entry["items"] = ((entry.get("items") or []) + fresh)[:FEED_MAX]
+                entry["cursor"] = next_cursor
+                entry["has_more"] = bool(has_more) and len(entry["items"]) < FEED_MAX
+                entry["ts"] = time.time()
+                add = []
+                if ch == self._channel:
+                    have = {d["id"] for d in self._dramas}
+                    for s in fresh:
+                        if s["id"] in self._feed_ids:
+                            continue
+                        self._feed_ids.append(s["id"])
+                        if s["id"] not in have:
+                            add.append(self._to_drama(s, len(self._feed_ids) - 1))
+                    if add:
+                        self._dramas = self._dramas + add
+                total = len(entry["items"])
+            self._save_feed_cache(ch)
+            print(f"[sdk] {ch} 续页 +{len(fresh)} 部，累计 {total} 部"
+                  f"（has_more={entry['has_more']}）", flush=True)
+            if ch == self._channel and fresh:
+                self.dramasChanged.emit()
+                self._backfill_covers_async(limit=3)
+        except Exception as e:
+            print(f"[sdk] {ch} 续页失败（保留游标，稍后再试）: {e}", flush=True)
+        finally:
+            with self._lock:
+                self._more_inflight.discard(ch)
+
+    @staticmethod
+    def _to_drama(s, i):
+        """feed 里的一条 → QML 用的剧单条目。i 只用于给列表配色 / 占位渐变。"""
+        return {
+            "id": s["id"],
+            "title": s.get("title", ""),
+            # feed 自带真实集数；不再为拿集数而预拉分集（那会让启动慢好几秒）
+            "total": s.get("episode_count", 0),
+            "covers": list(COVER_PAIRS[i % len(COVER_PAIRS)]),
+            "cover": "",                      # 本地转码后的封面，后台补
+            "cover_url": s.get("cover_url", ""),
+            "desc": s.get("description", ""),
+        }
+
     def _apply_items(self, ch, items, prefer="", random_fallback=True):
-        """把 feed items 变成 QML 用的剧单并发出信号。prefer：优先播哪部。"""
-        out = []
-        for i, s in enumerate(items[:MAX_DRAMAS]):
-            out.append({
-                "id": s["id"],
-                "title": s.get("title", ""),
-                # feed 自带真实集数；不再为拿集数而预拉分集（那会让启动慢好几秒）
-                "total": s.get("episode_count", 0),
-                "covers": list(COVER_PAIRS[i % len(COVER_PAIRS)]),
-                "cover": "",                      # 本地转码后的封面，后台补
-                "cover_url": s.get("cover_url", ""),
-                "desc": s.get("description", ""),
-            })
+        """把 feed items 变成 QML 用的剧单并发出信号。prefer：优先播哪部。
+
+        items 是缓存里累积的整段推荐流（首页 + 已续过的页），滚动到末尾会继续追加。
+        """
+        out = [self._to_drama(s, i) for i, s in enumerate(items[:FEED_MAX])]
         ids = [d["id"] for d in out]
         if prefer and prefer in ids:
             rec = prefer                          # 切回频道：回到上次看的那部
@@ -543,6 +634,10 @@ class HgService(QObject):
         self.statusChanged.emit()
         if out:
             self._backfill_covers_async(limit=3)     # 先转首屏这几张，其余打开面板时再补
+            entry = self._feed_cache.get(ch) or {}
+            if entry.get("has_more") and entry.get("cursor"):
+                # 首页到手就先续一页：用户滑到末尾时，下一页通常已经在本地了
+                threading.Thread(target=self._more, args=(ch,), daemon=True).start()
         return out
 
     def _load(self, channel=None, startup=False):
@@ -581,7 +676,7 @@ class HgService(QObject):
         # 启动路径：首屏每次换一部（不用 _channel_last，那是「切频道回到上次」才用的）
         self._apply_items(ch, items, "", random_fallback=True)
         if items:
-            self.toast.emit(f"{ch} · 已载入 {len(items[:MAX_DRAMAS])} 部剧")
+            self.toast.emit(f"{ch} · 已载入 {min(len(items), FEED_MAX)} 部剧")
         self.warm_channels_async()
 
     def _refresh_channel(self, ch):

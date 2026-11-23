@@ -15,7 +15,8 @@ ApplicationWindow {
     readonly property real videoAspect: Player.videoWidth > 0 && Player.videoHeight > 0
                                         ? Player.videoWidth / Player.videoHeight
                                         : designAspect
-    property bool fitToVideo: false
+    // 启动默认按片源比例（设置里可关闭）：竖屏 9:16 保持原样，横屏片源会把窗口拉成同样的比例
+    property bool fitToVideo: true
     // 记住最近一次有效的片源比例：换集时视频尺寸会短暂归零，直接取 videoAspect 会让窗口跳一下
     property real appliedVideoAspect: designAspect
     readonly property real windowAspect: fitToVideo ? appliedVideoAspect : designAspect
@@ -70,7 +71,7 @@ ApplicationWindow {
     function toggleFitToVideo() {
         if (immersive) setImmersive(false)       // 全屏下改窗口几何没有意义，先退出
         if (fitToVideo) {
-            fitToVideo = false
+            Store.prefs.fitWindow = false
             applyAspect(designAspect)
             Store.toast("窗口已恢复 9:16")
             return
@@ -80,7 +81,7 @@ ApplicationWindow {
             return
         }
         appliedVideoAspect = videoAspect
-        fitToVideo = true
+        Store.prefs.fitWindow = true
         applyAspect(videoAspect)
         Store.toast("窗口已适配视频比例 " + Math.round(videoAspect * 100) / 100 + ":1")
     }
@@ -89,6 +90,17 @@ ApplicationWindow {
         if (!canFitToVideo) return       // 尺寸还没拿到 / 正在换集，保持上一次的比例
         appliedVideoAspect = videoAspect
         if (fitToVideo) applyAspect(videoAspect)
+    }
+
+    // 设置页切换「按片源比例自动调整」：立刻按当前状态重排窗口
+    // （控件栏的按钮走 toggleFitToVideo 自己会调，这里判定值没变就直接返回，避免重复重排）
+    Connections {
+        target: Store.prefs
+        function onFitWindowChanged() {
+            if (win.fitToVideo === Store.prefs.fitWindow) return
+            win.fitToVideo = Store.prefs.fitWindow
+            win.applyAspect(win.fitToVideo ? win.appliedVideoAspect : win.designAspect)
+        }
     }
 
     // 说明：QML 只能拿到整个虚拟桌面的可用区域；C++ 正式版应使用 QScreen::availableGeometry()
@@ -172,6 +184,8 @@ ApplicationWindow {
     Component.onCompleted: {
         Theme.reducedMotion = systemReducedMotion
         if (shotMode) Store.muted = true      // 截图模式静音
+        // 启动：按片源比例决定窗口比例（默认开）；显式给了 --size 就尊重用户指定的尺寸
+        fitToVideo = (launchWidth > 0 || launchHeight > 0) ? false : Store.prefs.fitWindow
         windowAspectRequested(windowAspect)
         player.open(launchDrama)
         switch (launchPage) {

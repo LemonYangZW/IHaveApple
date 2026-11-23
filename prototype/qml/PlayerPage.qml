@@ -60,6 +60,7 @@ Rectangle {
         stage.episode = ep
         stage.start(pos)
         Qt.callLater(() => sheet.grid.showEpisode(ep, false))
+        maybeLoadMore()          // 已经滑到推荐流末尾附近：先续一页，免得转圈回到第一部
     }
     // 打开一部剧时从哪里起播：有进度接着上次；上次已看到 95% 以上，从下一集开头开始
     function startOf(id) {
@@ -174,6 +175,16 @@ Rectangle {
     function onWheel(dir) {
         if (Store.prefs.wheelAction === "volume") stepVolume(-dir)
         else stepEpisodeOrDrama(dir)
+    }
+    // 离推荐流末尾还剩不到几部时，让后端续一页（服务端可以一直翻，见 hgservice._more）
+    function maybeLoadMore() {
+        if (!Backend.feedHasMore) return
+        const ids = Backend.feedIds
+        if (!ids || ids.length === 0) return
+        let i = -1
+        for (let k = 0; k < ids.length; ++k)
+            if (String(ids[k]) === String(dramaId)) { i = k; break }
+        if (i >= 0 && i >= ids.length - Backend.feedMoreAt) Backend.loadMore()
     }
     // 当前频道剧单里 from（默认当前这部）的上一部 / 下一部（循环）；没有可换的返回 ""
     function neighborId(dir, from) {
