@@ -119,4 +119,6 @@ def prune(app_dir):
 
 
 if __name__ == "__main__":
+    # CI 的 Windows 机器控制台是 cp1252，打印中文会抛 UnicodeEncodeError
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     prune(sys.argv[1] if len(sys.argv) > 1 else os.path.join("dist", "IHaveApple"))
