@@ -539,10 +539,11 @@ Rectangle {
         onReplay: stage.replay()
     }
 
-    // 底部信息区：剧名 + 简介 + 集数 + 查看全集（常驻，不随控件淡出）
+    // 底部信息区：剧名 + 简介 + 集数 + 查看全集（与控件同步显隐）
     DramaInfo {
         id: dramaInfo
         objectName: "dramaInfo"
+        shown: stage.controlsShown
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.bottom: controls.top

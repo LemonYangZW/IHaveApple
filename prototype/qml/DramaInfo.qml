@@ -11,6 +11,7 @@ Item {
     property int episode: 1
     property int total: 0
     property bool inDramaView: false   // 已在全剧界面：入口按钮隐藏
+    property bool shown: true          // 跟随控件显隐：空闲时和控件一起淡出
     signal showAll()
 
     readonly property string title: drama ? drama.title : ""
@@ -20,7 +21,11 @@ Item {
 
     // 渐变向上延伸，让文字离开画面主体；信息区本体只占文字高度
     height: Theme.layout.dramaInfo
-    visible: hasContent && !inDramaView
+    // 控件自动隐藏时一起淡出：淡出完成后不再参与合成，也不再接收点击
+    opacity: shown ? 1 : 0
+    enabled: shown
+    visible: opacity > 0 && hasContent && !inDramaView
+    Behavior on opacity { NumberAnimation { duration: Theme.reducedMotion ? 0 : Theme.motion.base } }
 
     Rectangle {
         anchors.left: parent.left
