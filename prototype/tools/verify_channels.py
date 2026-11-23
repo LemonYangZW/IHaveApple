@@ -1,7 +1,7 @@
-"""验收：顶部频道 tab（真人剧 / 漫剧 / AI剧 / 推荐）。
+"""验收：顶部频道 tab（真人剧 / 漫剧 / 推荐）。
 
-验证：tab 是透明的四枚、默认选中「推荐」、点击能换内容流、
-      AI剧 空频道显示提示而不是停在旧画面。
+验证：tab 是透明的三枚、默认选中「推荐」、点击能换内容流、
+      再点一次当前 tab 换一批节目（换一部 + 后台重新拉首页）。
 
 用法：python -I tools/verify_channels.py
 """
@@ -112,16 +112,16 @@ st = {}
 
 
 def step1():
-    log("\n=== 1. 四枚透明 tab ===")
+    log("\n=== 1. 三枚透明 tab ===")
     bar = win.findChild(QQuickItem, "channelBar")
     st["bar"] = bar
     check(bar is not None, "频道栏已实例化")
-    names = ["真人剧", "漫剧", "AI剧", "推荐"]
+    names = ["真人剧", "漫剧", "推荐"]
     found = [tab(n) for n in names]
-    check(all(found), "四个 tab 都在", [n for n, f in zip(names, found) if not f])
+    check(all(found), "三个 tab 都在", [n for n, f in zip(names, found) if not f])
     log("  tab 文本:", [ev(f, "modelData") for f in found if f])
-    check(ev(bar, "Backend.channels") == names or list(ev(bar, "Backend.channels") or []) == names,
-          "tab 顺序与红果一致（真人剧/漫剧/AI剧/推荐）", str(ev(bar, "Backend.channels")))
+    check(list(ev(bar, "Backend.channels") or []) == names,
+          "tab 顺序与红果一致（真人剧/漫剧/推荐，AI剧 已隐藏）", str(ev(bar, "Backend.channels")))
     check(ev(bar, "color") is None or True, "频道栏自身无背景填充（透明形式）",
           "ChannelBar 是 Item，不绘制背景")
 
@@ -158,17 +158,30 @@ def step2():
 
 
 def step3():
-    log("\n=== 3. 切到「AI剧」（后端暂无内容）===")
+    log("\n=== 3. 再点一次「漫剧」tab：换一批节目 ===")
     prev = ids()
-    click_item(tab("AI剧"))
-    ok = wait_feed(prev)
+    prev_drama = str(ev(win, "player.dramaId"))
+    t0 = time.time()
+    click_item(tab("漫剧"))
+    QTest.qWait(800)
+    drama = str(ev(win, "player.dramaId"))
+    check(drama != prev_drama, "点当前 tab 立刻换了一部", f"{prev_drama} -> {drama}")
+    check(drama in prev, "换的是当前频道里的剧", drama)
+    # 等后台重拉首页完成
+    deadline = time.time() + 25
+    while time.time() < deadline and backend._refresh_inflight:
+        QTest.qWait(250)
     QTest.qWait(1200)
-    shot("3-aiju.png")
-    check(ok, "AI剧 已加载完（状态 empty）", backend.status)
-    check(backend.channel == "AI剧", "后端频道为「AI剧」", backend.channel)
-    check(backend.status == "empty", "状态是 empty 而不是 error", backend.status)
-    check(len(ids()) == 0, "该频道没有内容", f"{len(ids())} 部")
-    check(bool(ev(win, "player.channelEmpty")), "播放页进入「暂无内容」状态")
+    shot("3-reshuffle.png")
+    now = ids()
+    log(f"  换一批耗时 {time.time() - t0:.2f}s，{len(prev)} -> {len(now)} 部")
+    check(backend.channel == "漫剧", "频道没变", backend.channel)
+    check(bool(ev(tab("漫剧"), "selected")), "「漫剧」仍是选中态")
+    check(set(prev) <= set(now), "原来的剧都还在剧单里（合并而不是替换）",
+          f"少了 {len(set(prev) - set(now))} 部")
+    check(bool(now), "剧单非空", f"{len(now)} 部")
+    st["manju_ids"] = now
+    st["manju_drama"] = str(ev(win, "player.dramaId"))
     QTimer.singleShot(200, step4)
 
 

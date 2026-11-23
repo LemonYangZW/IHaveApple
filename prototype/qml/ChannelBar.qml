@@ -2,7 +2,7 @@ import QtQuick
 import QtQuick.Templates as T
 import IHaveApple 1.0
 
-// 顶部频道 tab（真人剧 / 漫剧 / AI剧 / 推荐）。
+// 顶部频道 tab（真人剧 / 漫剧 / 推荐）。再点一次当前 tab = 换一批节目，见 Main.pickChannel。
 // 透明形式：不加任何背景块，文字直接压在画面上，选中项用海棠红下划线标出；
 // 和标题栏一样跟随控件淡入淡出，鼠标静止后一起隐藏。
 Item {

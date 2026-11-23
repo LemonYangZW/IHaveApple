@@ -49,12 +49,13 @@ python main.py --drama 3     # 指定播放第 3 部
 
 ### 频道
 
-顶部有四个透明的频道 tab：**真人剧 · 漫剧 · AI剧 · 推荐**（与红果一致，选中项为字幕白 + 海棠红下划线）。
+顶部有三个透明的频道 tab：**真人剧 · 漫剧 · 推荐**（与红果一致，选中项为字幕白 + 海棠红下划线）。
 
 - tab 不加任何背景块，文字直接压在画面上；和标题栏一样跟随控件淡入淡出，鼠标静止后一起隐藏，不破坏沉浸。
 - 切换 tab 会换掉整个内容流（`/v1/feed?channel=`），并播该频道的推荐；选中的频道持久保存，下次启动直接进入。
-- **AI剧 目前是空的**：上游对这个频道返回 `502 unknown discover channel`，所以界面显示「「AI剧」暂时没有内容」。
-  这个频道名一旦上游放开就会自动出现内容，代码不用改。
+- **再点一次当前 tab = 换一批节目**：立刻随机换一部，同时后台重拉当前频道的首页，新的一批排到剧单最前
+  （正在看的这部仍留在剧单里，不会掉出去）；拉着新页时会提示「已换一批（新增 N 部）」。
+- **AI剧 已从 tab 隐藏**：上游对这个频道返回 `502 unknown discover channel`，没有可播内容。
 
 **切换是秒开的**。`/v1/feed` 每次回源要 4–5 秒（后端不缓存），是全链路最慢的一环，所以 feed 结果按频道缓存到
 `.cache/feeds/<频道>.json`（同时有内存副本）：
@@ -119,7 +120,7 @@ python -I tools/verify_search_page.py
 python -I tools/verify_prefetch.py
 ```
 
-`tools/verify_channels.py` 验收顶部频道 tab（四枚、默认推荐、切换换流、AI剧 空状态、缓存秒开）：
+`tools/verify_channels.py` 验收顶部频道 tab（三枚、默认推荐、切换换流、再点当前 tab 换一批、缓存秒开）：
 
 ```bash
 python -I tools/verify_channels.py

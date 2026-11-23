@@ -20,7 +20,7 @@ Rectangle {
     property bool awaitingRecommend: false
     // 用户切了频道：等新频道的剧单到达后改播该频道的推荐
     property bool awaitingChannel: false
-    // 频道没有内容（实测 AI剧 上游暂无片源）
+    // 频道没有内容（上游空数据时）
     readonly property bool channelEmpty: Backend.status === "empty"
 
     // 当前 dramaId 是否对应剧单里真实存在的剧（启动时 dramaId 可能是 0 / 空，代表「等推荐」）
@@ -175,6 +175,16 @@ Rectangle {
     function onWheel(dir) {
         if (Store.prefs.wheelAction === "volume") stepVolume(-dir)
         else stepEpisodeOrDrama(dir)
+    }
+    // 再点一次当前频道 tab：随机换一部（和「下一部」不同，避免总在原地打转）
+    function showAnother() {
+        const ids = Backend.feedIds
+        if (!ids || ids.length < 2) return
+        const start = Math.floor(Math.random() * ids.length)
+        for (let k = 0; k < ids.length; ++k) {
+            const id = String(ids[(start + k) % ids.length])
+            if (id !== String(dramaId)) { open(id); return }
+        }
     }
     // 离推荐流末尾还剩不到几部时，让后端续一页（服务端可以一直翻，见 hgservice._more）
     function maybeLoadMore() {

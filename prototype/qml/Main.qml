@@ -267,8 +267,13 @@ ApplicationWindow {
     }
 
     // 切频道：后端换内容流，播放页等新剧单到达后播该频道的推荐
+    // 再点一次当前频道：立刻换一部节目，同时后台再拉一批新的推荐
     function pickChannel(ch) {
-        if (ch === Backend.channel) return
+        if (ch === Backend.channel) {
+            player.showAnother()
+            Backend.reshuffle()
+            return
+        }
         player.closeEpisodes()
         library.close()
         player.dramaMode = false      // 换频道 = 换内容流，回到信息流模式

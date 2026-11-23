@@ -42,9 +42,10 @@ API = "http://127.0.0.1:8899"
 QUALITY = "1080p"                 # 界面选「自动」（definition 为空）时用的清晰度
 SWITCH_WAIT = 40                  # 播放中换清晰度时，最多等新清晰度落盘多久（秒）
 
-# 顶部频道：四个 tab（顺序与界面一致）。后端 feed 用 channel 参数区分内容流，
-# 实测「推荐」是混合推荐流，跟「真人剧」返回的不是同一批；「AI剧」上游暂无内容。
-CHANNELS = ("真人剧", "漫剧", "AI剧", "推荐")
+# 顶部频道：三个 tab（顺序与界面一致）。后端 feed 用 channel 参数区分内容流，
+# 实测「推荐」是混合推荐流，跟「真人剧」返回的不是同一批。
+# 「AI剧」上游没有这个频道（unknown discover channel），已从 tab 隐藏。
+CHANNELS = ("真人剧", "漫剧", "推荐")
 DEFAULT_CHANNEL = "推荐"
 
 # 封面缓存。服务端封面是 HEIC（Content-Type: image/heic），Qt 无法解码，
@@ -273,6 +274,7 @@ class HgService(QObject):
         self._feed_cache = {}    # channel -> {items, ts}；有它切频道就不用等 4–5 秒
         self._feed_inflight = {} # channel -> Event：同频道的并发请求合并成一次
         self._more_inflight = set()  # 正在续页的频道（同一频道只续一次，避免连点叠请求）
+        self._refresh_inflight = set()  # 正在「换一批」的频道（连点 tab 时只发一次请求）
         self._warming = False    # 是否已有预热线程在跑（避免重复预热）
         self._covering = False   # 是否已有封面补全在跑（避免两批抢同一批剧）
         self._cover_again = False  # 期间又有新剧要补，等当前批结束后再来一轮
@@ -595,6 +597,49 @@ class HgService(QObject):
         finally:
             with self._lock:
                 self._more_inflight.discard(ch)
+
+    # ---------- 再点一次当前频道：换一批 ----------
+    @Slot()
+    def reshuffle(self):
+        """QML：再点一次当前频道 tab，换一批节目（后台重新拉首页，合并进现有列表）。"""
+        threading.Thread(target=self._reshuffle, daemon=True).start()
+
+    def _reshuffle(self, channel=None):
+        """重新拉当前频道首页，把新的一批排到最前，同时保留旧列表（正在看的剧不会掉出剧单）。"""
+        ch = channel if channel is not None else self._channel
+        with self._lock:
+            if ch in self._refresh_inflight:
+                return
+            self._refresh_inflight.add(ch)
+        try:
+            self.ensure_service()
+            page, cursor, has_more = self._fetch_feed(ch)
+            if not page:
+                self.toast.emit(f"{ch} · 上游暂时没有新内容")
+                return
+            with self._lock:
+                entry = self._feed_cache.get(ch) or {}
+                old = entry.get("items") or []
+                old_ids = {s.get("id") for s in old}
+                page_ids = {s.get("id") for s in page}
+                merged = (page + [s for s in old if s.get("id") not in page_ids])[:FEED_MAX]
+                fresh = len([s for s in page if s.get("id") not in old_ids])
+                self._feed_cache[ch] = {"items": merged, "ts": time.time(),
+                                        "cursor": cursor, "has_more": bool(has_more)}
+            self._save_feed_cache(ch)
+            if ch != self._channel:
+                return                      # 请求期间切走了，缓存更新即可
+            # 正在看的这部还在这批里就继续选它（QML 已经先换到别的剧了，这里只重排剧单）
+            self._apply_items(ch, merged, prefer=self._current_drama, random_fallback=False)
+            self.toast.emit(f"{ch} · 已换一批（新增 {fresh} 部）" if fresh
+                            else f"{ch} · 这一批没有新节目，再点一次试试")
+            print(f"[sdk] {ch} 换一批：新增 {fresh} 部，累计 {len(merged)} 部", flush=True)
+        except Exception as e:
+            print(f"[sdk] {ch} 换一批失败: {e}", flush=True)
+            self.toast.emit(f"{ch} · 换一批失败，稍后再试")
+        finally:
+            with self._lock:
+                self._refresh_inflight.discard(ch)
 
     @staticmethod
     def _to_drama(s, i):
