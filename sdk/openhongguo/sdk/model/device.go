@@ -24,8 +24,6 @@ type Device struct {
 	// Pad 让设备以平板身份出现（dragon_device_type=pad）。
 	Pad bool `json:"pad,omitempty"`
 	// Channel 是 App 构建上报的分发渠道（"xiaomi_8662_64" 来自小米应用商店）。
-	// 注意：不能含下划线。metasec 的 so 把这个字段当「品牌_型号_位数」解析，
-	// 带 `_` 会让播放接口返回 HTTP 200 + 0 字节（对照实验见 FIX-REPORT.md）。
 	Channel string `json:"channel"`
 }
 
@@ -38,8 +36,7 @@ var DefaultDevice = Device{
 	Build:      "UKQ1.230804.001",
 	Resolution: "1200*2670",
 	DPI:        460,
-	// DefaultChannel 是真机抓到的渠道号，不含 `_`，播放接口只认这种值。
-	Channel:    "69310258a",
+	Channel:    "xiaomi_8662_64",
 }
 
 // OrDefault 用 DefaultDevice 填充 d 中留空的字段。Pad 保持原值。

@@ -55,6 +55,7 @@ var (
 	warmWork     = flag.Int("warm", 3, "feed 时后台预热前 N 条")
 	exposeKey    = flag.Bool("expose-key", false, "是否在 /v1/play 响应里返回 content_key")
 	configPath   = flag.String("config", "config.json", "配置文件路径，不存在则忽略")
+	padMode      = flag.Bool("pad", false, "以平板（PAD）设备身份注册（dragon_device_type=pad）")
 )
 
 // ---------- 应用 ----------
@@ -115,6 +116,22 @@ type playResponse struct {
 	Qualities   []qualityItem `json:"qualities,omitempty"`
 }
 
+// padDevice 是平板身份的匿名注册档案（Xiaomi Pad 5 / Android 11）。
+// 打开 Pad 后，注册与后续请求都带 dragon_device_type=pad、is_android_pad_screen=1，
+// User-Agent 和播放接口的 kind 字段也按平板下发。
+// 只影响之后新注册的档案；已有档案保留注册时的设备。
+func padDevice() model.Device {
+	d := model.DefaultDevice
+	d.Model = "2612CRPFFC"
+	d.OSVersion = "17"
+	d.OSAPI = 37
+	d.Build = "CP2A.260605.016"
+	d.Resolution = "2136*3200"
+	d.DPI = 400
+	d.Pad = true
+	return d
+}
+
 func main() {
 	flag.Parse()
 	applyConfig(*configPath)
@@ -126,14 +143,18 @@ func main() {
 		log.Fatalf("创建缓存目录失败: %v", err)
 	}
 
-	cl, err := adapters.NewClient(*profile, sdk.Options{
+	opts := sdk.Options{
 		RetryAttempts:      2,
 		APIOrigin:          *apiOrigin,
 		RegisterOrigin:     *registerOrigin,
 		DistributionOrigin: *distOrigin,
 		SignerURL:          *signerURL,
 		SignerToken:        *signerToken,
-	})
+	}
+	if *padMode {
+		opts.Device = padDevice()
+	}
+	cl, err := adapters.NewClient(*profile, opts)
 	if err != nil {
 		log.Fatalf("创建 SDK 客户端失败: %v", err)
 	}
@@ -944,6 +965,7 @@ type configFile struct {
 	Channel    *string `json:"channel"`
 	Warm       *int    `json:"warm"`
 	ExposeKey  *bool   `json:"expose_key"`
+	Pad        *bool   `json:"pad"`
 }
 
 func applyConfig(path string) {
@@ -989,6 +1011,7 @@ func applyConfig(path string) {
 	num("max-cache-mb", maxCacheMB, c.MaxCacheMB)
 	num("warm", warmWork, c.Warm)
 	bln("expose-key", exposeKey, c.ExposeKey)
+	bln("pad", padMode, c.Pad)
 
 	log.Printf("已加载配置: %s", path)
 }

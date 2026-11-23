@@ -64,6 +64,8 @@ Rectangle {
     property real startAt: 0                       // 这一集从第几秒起播（续播历史进度 / 重试）；0 = 从头
     property real seekPending: -1                  // 实时流上跳转：等落盘后从这里重新装载；-1 = 无
     readonly property bool controlsShown: (awake || !playing || episodesOpen) && phase !== "ended" && phase !== "error"
+    // 出错 / 全剧终的浮层是实心遮罩，控件虽然隐藏，光标仍要可见 —— 否则鼠标落在黑色遮罩上就看不见了
+    readonly property bool pointerVisible: controlsShown || phase === "error" || phase === "ended"
 
     // 向本地 SDK 请求这一集的播放地址；地址到达后由 onEpisodeReady 装载
     function start(pos) {
@@ -391,7 +393,7 @@ Rectangle {
         id: pointer
         anchors.fill: parent
         hoverEnabled: true
-        cursorShape: following ? Qt.ClosedHandCursor : stage.controlsShown ? Qt.ArrowCursor : Qt.BlankCursor
+        cursorShape: following ? Qt.ClosedHandCursor : stage.pointerVisible ? Qt.ArrowCursor : Qt.BlankCursor
         property real wheelAccum: 0
         // 按住上下拖动：画卷跟手。松手时拖过 layout.swipe、或快速甩过（≥ layout.swipeVelocity）就续滑到上 / 下一个，
         // 否则弹回。上拖 = 下一个（同往下滚）。移动超过系统拖动阈值就算拖动，不再触发单击暂停
