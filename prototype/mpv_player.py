@@ -81,6 +81,9 @@ class MpvPlayer(QObject):
         self._wh = (0, 0)
         self._target_wh = (0, 0)     # 控件尺寸（VideoItem 上报），0 = 未上报
         self._video_wh = (0, 0)      # 源视频尺寸，GUI 线程轮询后缓存给渲染线程
+        # 装载代数：每次 loadfile +1。渲染线程在一帧渲染前后各看一次，变了就丢掉这一帧 ——
+        # 否则装载前就开始渲染的旧片那一帧会被当成新片首帧（ready 提前触发，切集时闪一下上一集的画面）
+        self._gen = 0
         self._wake = threading.Event()   # mpv 更新回调 → 唤醒渲染线程
         self._running = True
         self._cb = None
@@ -153,6 +156,7 @@ class MpvPlayer(QObject):
                 self._render_frame()
 
     def _render_frame(self):
+        gen = self._gen
         flags = _lib.mpv_render_context_update(self._rc)
         if not (flags & 1):     # MPV_RENDER_UPDATE_FRAME
             return
@@ -187,6 +191,8 @@ class MpvPlayer(QObject):
         if _lib.mpv_render_context_render(self._rc, C.cast(params, C.c_void_p)) < 0:
             return
         _lib.mpv_render_context_report_swap(self._rc)
+        if gen != self._gen:
+            return              # 渲染期间装载了新片：这一帧属于上一片，丢掉
 
         # 深拷贝：mpv 会复用这块缓冲区，不能把指针交出去
         self._image = QImage(self._buf, w, h, w * 4, QImage.Format_RGB32).copy()
@@ -278,6 +284,7 @@ class MpvPlayer(QObject):
             self._target_wh = (int(w), int(h))
 
     def _load(self, target, start=0.0):
+        self._gen += 1
         self._first_frame = False
         self._eof_sent = False
         self._video_wh = (0, 0)      # 新片尺寸可能不同：等轮询拿到再渲染，避免首帧比例错误

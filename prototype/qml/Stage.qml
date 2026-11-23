@@ -306,6 +306,10 @@ Rectangle {
     }
 
     // ---------- 视频表面池 ----------
+    // 某一集的首帧图（预载落盘后才有）；读 posterRevision 让绑定在新图抽好时重新求值
+    function posterOf(d, ep) {
+        return d && Backend.posterRevision >= 0 ? Backend.posterOf(String(d.id), ep) : ""
+    }
     Item {
         id: reel
         objectName: "reel"
@@ -319,6 +323,7 @@ Rectangle {
             drama: stage.incoming < 0 && stage.swipeDramas ? stage.prevDrama : stage.drama
             episode: stage.incoming >= 0 && stage.incomingDir < 0 ? stage.incoming
                    : stage.incoming < 0 && stage.swipeDramas ? 0 : stage.episode - 1
+            poster: stage.posterOf(drama, episode)
             showCover: true
         }
         VideoSurface {
@@ -326,6 +331,7 @@ Rectangle {
             drama: stage.drama
             episode: stage.episode
             position: stage.position
+            poster: stage.posterOf(drama, episode)
             live: true
             showCover: stage.phase === "loading"
         }
@@ -335,6 +341,7 @@ Rectangle {
             drama: stage.incoming < 0 && stage.swipeDramas ? stage.nextDrama : stage.drama
             episode: stage.incoming >= 0 && stage.incomingDir > 0 ? stage.incoming
                    : stage.incoming < 0 && stage.swipeDramas ? 0 : stage.episode + 1
+            poster: stage.posterOf(drama, episode)
             showCover: true
         }
     }
@@ -344,6 +351,7 @@ Rectangle {
         width: stage.width; height: stage.height
         drama: stage.drama
         episode: stage.incoming
+        poster: stage.posterOf(drama, episode)
         showCover: true
         opacity: 0
         visible: opacity > 0

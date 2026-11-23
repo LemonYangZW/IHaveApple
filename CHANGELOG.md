@@ -2,6 +2,17 @@
 
 本项目的版本变更都记录在这里。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [v0.1.9] - 2026-11-23
+
+### 变更
+
+- 切到已预热的集不再显示剧封面：预热落盘后抽出这一集的首帧，画卷滑动和起播加载期间都显示它，视频起播后从同一帧接上，看不出两集之间的切换。还没预热好的集仍显示剧封面
+- 本集临近结尾时预取的下一集也会等落盘并抽首帧，信息流里自动连播同样无缝
+
+### 修复
+
+- 切集时偶尔闪一下上一集的画面：渲染途中装载了新片，上一片的残帧被当成新片首帧显示
+
 ## [v0.1.8] - 2026-11-23
 
 ### 修复
@@ -100,7 +111,8 @@
 - 进度条精准跳转，未缓存的集也能拖到任意位置
 - 选集面板、搜索、观看历史、设置（快捷键、自动连播、最小化暂停、清晰度、倍速等）
 
-[未发布]: https://github.com/LemonYangZW/IHaveApple/compare/v0.1.8...HEAD
+[未发布]: https://github.com/LemonYangZW/IHaveApple/compare/v0.1.9...HEAD
+[v0.1.9]: https://github.com/LemonYangZW/IHaveApple/compare/v0.1.8...v0.1.9
 [v0.1.8]: https://github.com/LemonYangZW/IHaveApple/compare/v0.1.7...v0.1.8
 [v0.1.7]: https://github.com/LemonYangZW/IHaveApple/compare/v0.1.6...v0.1.7
 [v0.1.6]: https://github.com/LemonYangZW/IHaveApple/compare/v0.1.5...v0.1.6

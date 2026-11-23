@@ -233,6 +233,51 @@ def _cover_file(drama_id, url, cover_dir):
     return _file_url(out) if os.path.exists(out) else ""
 
 
+def _poster_path(eid, cover_dir):
+    return os.path.join(cover_dir, f"ep_{eid}.jpg")
+
+
+def _make_poster(eid, definition, video_dir, cover_dir):
+    """从已落盘的 mp4 抽出这一集的第一帧，存成 JPEG（已有就跳过）。返回是否可用。
+
+    切集时先显示它而不是剧封面：起播后画面从同一帧接上，看不出两集之间的加载。
+    原分辨率出图：比视频糊的话，起播那一下能看出画面「变清楚」。
+    """
+    out = _poster_path(eid, cover_dir)
+    if os.path.exists(out) and os.path.getsize(out) > 1024:
+        return True
+    if not FFMPEG:
+        return False
+    # ohgd 缓存优先：落盘的可能不是请求的那一档，优先同档，没有就取任意一档
+    exact = os.path.join(video_dir, f"{eid}_{definition}.mp4")
+    if os.path.exists(exact):
+        src = exact
+    else:
+        src = next((os.path.join(video_dir, f) for f in os.listdir(video_dir)
+                    if f.startswith(eid + "_") and f.endswith(".mp4")), "")
+    if not src:
+        return False
+    tmp = os.path.join(cover_dir, f".ep_{eid}.tmp.jpg")
+    try:
+        subprocess.run(
+            [FFMPEG, "-y", "-loglevel", "error", "-threads", "1", "-i", src,
+             "-frames:v", "1", "-q:v", "3", tmp],
+            check=True, timeout=30,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) | _COVER_NICE,
+        )
+        os.replace(tmp, out)
+        return True
+    except Exception as e:
+        print(f"[sdk] 首帧抽取失败 {eid}: {e}", flush=True)
+        return False
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+
 def _wait_cached(eid, definition, timeout=SWITCH_WAIT):
     """换清晰度：等 SDK 把这一档落盘（3–8 秒）。
 
@@ -332,6 +377,7 @@ class HgService(QObject):
     toast = Signal(str)
     searchResults = Signal(str, list)         # query, [{id,title,total,covers,desc}]
     cacheChanged = Signal()                   # 缓存目录 / 占用 / 忙闲状态变了
+    postersChanged = Signal()                 # 有新的首帧图（或缓存目录换了 / 清空了）
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -356,6 +402,7 @@ class HgService(QObject):
         self._prefetched = set() # (dramaId, ep, definition) 已排队预取的集，避免重复请求
         self._preload_queue = [] # 预载队列 [(dramaId, ep, definition)]，按播放页给的顺序逐个落盘
         self._preloading = False # 预载线程是否在跑
+        self._poster_rev = 0     # 首帧图版本号：QML 绑定读它，有新图时 +1 让 posterOf 重新求值
         self._current_drama = "" # 最近一次准备播放的剧（用于记录 _channel_last）
         # 缓存位置（设置页可改）：封面、推荐列表、视频各一个子目录
         self._cache_root = _cache_root_from_settings()
@@ -671,6 +718,7 @@ class HgService(QObject):
                     d["cover_tried"] = False
             self._load_feed_cache()
             self.dramasChanged.emit()
+            self._bump_posters()             # 首帧图跟着缓存目录走，换目录后重新查
             self._backfill_covers_async(limit=20)
             print(f"[sdk] 缓存目录 -> {new}", flush=True)
             self.toast.emit("缓存目录已切换；旧目录里的文件不会自动删除")
@@ -710,6 +758,7 @@ class HgService(QObject):
                     d["cover"] = ""
                     d["cover_tried"] = False
             self.dramasChanged.emit()
+            self._bump_posters()                  # 首帧图已删，界面退回剧封面
             self._backfill_covers_async(limit=20)
             freed = max(0, before - after)
             msg = f"已清理缓存，释放 {_fmt_bytes(freed)}"
@@ -1389,7 +1438,7 @@ class HgService(QObject):
                     self._preloading = False
                     return
                 self._prefetched.add(key)
-            if not self._prefetch(*key, wait=True):
+            if not self._prefetch(*key):
                 with self._lock:              # 上游拒绝：后面的也不会成功，别再打
                     self._preload_queue = []
                     self._preloading = False
@@ -1406,13 +1455,14 @@ class HgService(QObject):
             if key in self._prefetched:
                 return                     # 已经在解析 / 已解析好
             self._prefetched.add(key)
+        # 等落盘也在这个线程里：落了盘才能抽首帧，信息流里自动连播的下一集也要靠它无缝接上
         threading.Thread(target=self._prefetch, args=(drama_id, episode, definition),
                          daemon=True).start()
 
-    def _prefetch(self, drama_id, episode, definition, wait=False):
-        """提前准备某一集：解析播放地址 + 让服务端落盘（prewarm）。返回 False 表示上游拒绝。
+    def _prefetch(self, drama_id, episode, definition):
+        """提前准备某一集：解析播放地址 + 让服务端落盘（prewarm）+ 抽首帧。返回 False 表示上游拒绝。
 
-        wait：等落盘真正完成再返回。SDK 的 prewarm 是立即返回 202、后台落盘的，
+        等落盘真正完成再返回。SDK 的 prewarm 是立即返回 202、后台落盘的，
         预载不等的话几集会同时下载，和正在看的那一集抢带宽（它要落盘了才能 seek）。
 
         落盘后切集时 ohgd 直接读本地 mp4，秒开（也能 seek）；不落盘就要等实时转封装。
@@ -1441,8 +1491,10 @@ class HgService(QObject):
 
             # 2) 让服务端落盘：已落盘时立即返回 ready，重复调用很便宜
             _api(f"/v1/cache/prewarm/{eid}?definition={q}", timeout=180, tries=1)
-            if wait:
-                _wait_cached(eid, q, timeout=90)
+            _wait_cached(eid, q, timeout=90)
+            # 3) 抽首帧：切到这一集时先显示它，起播后画面从同一帧接上
+            if _make_poster(eid, q, self._video_dir, self._cover_dir):
+                self._bump_posters()
             print(f"[sdk] 预取就绪 {drama_id} ep={episode}", flush=True)
             return True
         except AnonLimited:
@@ -1462,6 +1514,28 @@ class HgService(QObject):
             if 0 <= episode < len(eps):
                 return eps[episode]["duration"]
         return 0
+
+    # ---------- 首帧图 ----------
+    def _bump_posters(self):
+        with self._lock:
+            self._poster_rev += 1
+        self.postersChanged.emit()
+
+    @Property(int, notify=postersChanged)
+    def posterRevision(self):
+        return self._poster_rev
+
+    @Slot(str, int, result=str)
+    def posterOf(self, drama_id, episode):
+        """这一集第一帧的本地图片地址；还没预取落盘（或抽帧失败）时返回 ""，界面退回剧封面。
+        QML 绑定里同时读 posterRevision，有新图时会重新求值。"""
+        with self._lock:
+            eps = self._episodes.get(drama_id) or []
+            if not (0 <= episode < len(eps)):
+                return ""
+            eid = eps[episode]["id"]
+        path = _poster_path(eid, self._cover_dir)
+        return _file_url(path) if os.path.exists(path) else ""
 
     @Slot(str, int, result=str)
     def episodeLabel(self, drama_id, episode):
