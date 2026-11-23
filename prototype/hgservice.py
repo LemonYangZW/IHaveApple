@@ -185,6 +185,70 @@ def _url_key(definition, strict):
     return f"{definition}!" if strict else definition
 
 
+def _kill_with_parent(proc):
+    """把 ohgd 挂进 Job Object（KILL_ON_JOB_CLOSE），让子进程跟着播放器一起收走。
+
+    正常退出由 shutdown() 的 terminate() 负责；这里补的是异常退出——被任务管理器
+    结束、崩溃、taskkill /F 时 Python 一行清理代码都跑不到，只有 Job 句柄随进程
+    关闭时由内核结束子进程。挂不上（比如被外层 Job 限制）就返回 None，行为退回原样。
+    """
+    if os.name != "nt" or proc is None:
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        job = k32.CreateJobObjectW(None, None)
+        if not job:
+            return None
+
+        class _Basic(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_int64),
+                ("PerJobUserTimeLimit", ctypes.c_int64),
+                ("LimitFlags", wintypes.DWORD),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", wintypes.DWORD),
+                ("SchedulingClass", wintypes.DWORD),
+            ]
+
+        class _Io(ctypes.Structure):
+            _fields_ = [
+                ("ReadOperationCount", ctypes.c_uint64),
+                ("WriteOperationCount", ctypes.c_uint64),
+                ("OtherOperationCount", ctypes.c_uint64),
+                ("ReadTransferCount", ctypes.c_uint64),
+                ("WriteTransferCount", ctypes.c_uint64),
+                ("OtherTransferCount", ctypes.c_uint64),
+            ]
+
+        class _Extended(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", _Basic),
+                ("IoInfo", _Io),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
+
+        info = _Extended()
+        info.BasicLimitInformation.LimitFlags = 0x2000   # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        if not k32.SetInformationJobObject(job, 9, ctypes.byref(info), ctypes.sizeof(info)):
+            k32.CloseHandle(job)
+            return None
+        if not k32.AssignProcessToJobObject(job, int(proc._handle)):
+            k32.CloseHandle(job)
+            return None
+        return job
+    except Exception:
+        return None
+
+
 class HgService(QObject):
     dramasChanged = Signal()
     episodeReady = Signal(str, int, str, str) # dramaId, episode(0-based), url, definition（与请求时一致）
@@ -202,6 +266,7 @@ class HgService(QObject):
         self._lock = threading.Lock()
         self._status = "idle"
         self._proc = None
+        self._job = None       # Job Object 句柄：崩溃时由内核收走 ohgd
         self._recommend = ""     # 首屏推荐（每次启动换一部）
         self._channel = self._saved_channel()
         self._feed_cache = {}    # channel -> {items, ts}；有它切频道就不用等 4–5 秒
@@ -235,6 +300,7 @@ class HgService(QObject):
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
+            self._job = _kill_with_parent(self._proc)
         except Exception as e:
             self._status = "error"
             self.toast.emit(f"SDK 启动失败：{e}")
