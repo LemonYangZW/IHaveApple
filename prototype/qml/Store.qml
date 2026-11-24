@@ -15,6 +15,7 @@ QtObject {
         property bool pauseOnMinimize: true    // 最小化时暂停，恢复窗口后继续
         property bool autoNext: true           // 自动播放下一集
         property bool titleCard: true          // 切集时显示集号字幕卡
+        property bool danmaku: true            // 画面上显示这一集的弹幕
         property bool keepAwake: true          // 播放时阻止休眠和息屏（原型不生效；C++ 调用 SetThreadExecutionState）
         property string quality: "自动"
         property real speed: 1.0               // 跨集、跨剧保留
@@ -48,20 +49,24 @@ QtObject {
     readonly property string definition: quality === "自动" ? "" : quality.toLowerCase()
 
     // ---------- 观看进度 ----------
-    // dramaId -> { ep, pos, at, title, total, desc, listed }，ep 从 0 开始，at 为最后观看时间（用于历史排序）。
+    // dramaId -> { ep, pos, dur, at, title, total, desc, listed }，ep 从 0 开始，at 为最后观看时间（用于历史排序）。
+    // dur 是这一集的时长快照：重启后历史 / 收藏里的剧还没取剧集信息，没有它就判断不了「这集是不是已经看完」。
     // 信息流里刷到的剧也记进度（滑回去能接着看），但只有进过全剧界面（查看全集 / 选集）的才 listed、进观看历史。
     // 标题 / 集数 / 简介是快照：重启后这部剧多半不在新的推荐流里，靠它把剧并回剧单（Backend.rememberDramas）。
     // 和搜索记录一起存在注册表（QtCore.Settings），升级、重装都不会丢；只有设置页「完全重置」会清掉
     property var progress: ({})
     property var searches: []                // 最近搜索词，新的在前，最多 maxSearches 条
+    // 收藏夹：[{ id, at, title, total, desc }]，新收藏的在前。标题等是快照，用途同 progress
+    property var favorites: []
     readonly property int maxSearches: 10
-    readonly property int maxHistory: 300    // 进度最多保留多少部（先丢没进历史的、再丢最久没看的），免得注册表越写越大
+    readonly property int maxHistory: 300    // 进度最多保留多少部（先丢没进历史 / 收藏的、再丢最久没看的），免得注册表越写越大
 
     property Settings records: Settings {
         id: recordsObj
         category: "records"
         property string progressJson: "{}"
         property string searchesJson: "[]"
+        property string favoritesJson: "[]"
     }
 
     function parseJson(text, fallback) {
@@ -70,12 +75,21 @@ QtObject {
     Component.onCompleted: {
         progress = parseJson(recordsObj.progressJson, {})
         searches = parseJson(recordsObj.searchesJson, [])
-        // 只把观看历史里的剧并回剧单；信息流里刷到的剧下次多半不在推荐流里，用不着
+        favorites = parseJson(recordsObj.favoritesJson, [])
+        // 只把观看历史和收藏夹里的剧并回剧单；信息流里刷到的剧下次多半不在推荐流里，用不着
+        // （两边都有的剧，后端按 id 去重）
         Backend.rememberDramas(Object.keys(progress).filter(k => progress[k].listed).map(k => ({
-            id: k, title: progress[k].title, total: progress[k].total, desc: progress[k].desc })))
+            id: k, title: progress[k].title, total: progress[k].total, desc: progress[k].desc }))
+            .concat(favorites.map(f => ({ id: f.id, title: f.title, total: f.total, desc: f.desc }))))
     }
 
     signal toast(string message)
+
+    // 弹幕开关：控件栏按钮、快捷键、设置页共用同一个设置项
+    function toggleDanmaku() {
+        prefsObj.danmaku = !prefsObj.danmaku
+        toast(prefsObj.danmaku ? "弹幕已开启" : "弹幕已关闭")
+    }
 
     function progressOf(id) { return progress[id] || null }
     // list = true：这部剧进观看历史（进了全剧界面时由 PlayerPage 传入）；之后的保存沿用原标记
@@ -83,14 +97,17 @@ QtObject {
         const d = MockData.drama(id)
         const old = progress[id] || {}
         const known = d && String(d.id) === String(id)      // 剧单里找不到时 drama() 会退回别的剧，不能拿来当快照
+        const dur = Backend.durationOf(String(id), ep)
         progress[id] = { ep: ep, pos: pos, at: Date.now(),
+                         dur: dur > 0 ? dur : (old.ep === ep ? (old.dur || 0) : 0),
                          title: known ? d.title : (old.title || ""),
                          total: known ? d.total : (old.total || 0),
                          desc: known ? (d.desc || "") : (old.desc || ""),
                          listed: !!(list || old.listed) }
         const ids = Object.keys(progress)
         if (ids.length > maxHistory) {
-            ids.sort((a, b) => (progress[a].listed - progress[b].listed) || (progress[a].at - progress[b].at))
+            const keep = k => (progress[k].listed || isFavorite(k)) ? 1 : 0
+            ids.sort((a, b) => (keep(a) - keep(b)) || (progress[a].at - progress[b].at))
             for (let i = 0; i < ids.length - maxHistory; ++i) delete progress[ids[i]]
         }
         recordsObj.progressJson = JSON.stringify(progress)
@@ -101,9 +118,37 @@ QtObject {
                                     .map(k => ({ id: k, at: progress[k].at }))
                                     .sort((a, b) => b.at - a.at)
     }
+    // 清空观看历史：收藏的剧保留进度（只移出历史），点开收藏照样能续播
     function clearHistory() {
-        progress = ({})
-        recordsObj.progressJson = "{}"
+        const kept = {}
+        for (const k in progress)
+            if (isFavorite(k)) kept[k] = Object.assign({}, progress[k], { listed: false })
+        progress = kept
+        recordsObj.progressJson = JSON.stringify(kept)
+    }
+
+    // ---------- 收藏夹 ----------
+    // 绑定里调用 isFavorite 会跟踪 favorites，所以改动时整体换一个新数组
+    function isFavorite(id) {
+        id = String(id)
+        return favorites.some(f => f.id === id)
+    }
+    // 收藏 / 取消收藏，返回之后是否已收藏
+    function toggleFavorite(id) {
+        id = String(id)
+        if (isFavorite(id)) {
+            favorites = favorites.filter(f => f.id !== id)
+        } else {
+            const d = MockData.drama(id)
+            if (!d || String(d.id) !== id) return false     // 剧单里找不到，没法记快照
+            favorites = [{ id: id, at: Date.now(), title: d.title, total: d.total, desc: d.desc || "" }].concat(favorites)
+        }
+        recordsObj.favoritesJson = JSON.stringify(favorites)
+        return isFavorite(id)
+    }
+    function clearFavorites() {
+        favorites = []
+        recordsObj.favoritesJson = "[]"
     }
 
     // ---------- 搜索记录 ----------
@@ -134,6 +179,11 @@ QtObject {
         { key: "speedUp",     name: "提高倍速",    seq: "]" },
         { key: "search",      name: "搜索",        seq: "Ctrl+F" },
         { key: "history",     name: "观看历史",    seq: "H" },
+        { key: "favorite",    name: "收藏 / 取消收藏", seq: "S" },
+        { key: "favorites",   name: "收藏夹",      seq: "B" },
+        { key: "danmaku",     name: "弹幕开 / 关", seq: "D" },
+        // 全局快捷键（见 Main.qml / native_window.GlobalHotkey）：在其他程序里按也生效
+        { key: "bossKey",     name: "一键隐藏 / 恢复（全局）", seq: "Ctrl+Alt+H" },
         { key: "settings",    name: "设置",        seq: "Ctrl+," }
     ]
     // action -> 当前按键序列

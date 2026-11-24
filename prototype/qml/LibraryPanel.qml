@@ -2,12 +2,12 @@ import QtQuick
 import QtQuick.Templates as T
 import IHaveApple 1.0
 
-// 搜索 / 观看历史面板：从标题栏下方展开，两种模式共用一个面板，与选集面板互斥。
-// 选中一部剧后由 Main 切换播放并关闭面板。不显示推荐内容。
+// 搜索 / 观看历史 / 收藏夹面板：从标题栏下方展开，三种模式共用一个面板，与选集面板互斥。
+// 选中一部剧后由 Main 切换播放并关闭面板（历史 / 收藏里点开会续播）。不显示推荐内容。
 Item {
     id: lib
 
-    property string mode: ""                 // "" | "search" | "history"
+    property string mode: ""                 // "" | "search" | "history" | "favorites"
     readonly property bool open: mode !== ""
     // 剧 id 是 19 位字符串（如 7707148393058946072）。这里声明成 int 会被截断成 32 位整数，
     // 结果是一条都解析不到，点进去还是原来那部剧 —— 所以信号和属性一律用 string。
@@ -20,7 +20,10 @@ Item {
     readonly property string query: field.text.trim()
     property var results: []
     property bool searching: false
-    readonly property var items: shownMode === "history" ? historyItems : results
+    // 收藏夹直接跟着 Store：在列表里取消收藏，那一行马上消失
+    readonly property var items: shownMode === "history" ? historyItems
+                               : shownMode === "favorites" ? Store.favorites : results
+    readonly property var titles: ({ history: "观看历史", favorites: "收藏夹" })
 
     // 服务端检索（/v1/search）：输入停止 300ms 后才发请求，避免逐字打服务端
     onQueryChanged: {
@@ -107,20 +110,32 @@ Item {
             onWheel: wheel => wheel.accepted = true
         }
 
-        // ---- 头部：搜索框 或 标题 ----
+        // ---- 头部：返回 + 搜索框 或 标题 ----
+        // 返回放在左侧：右上角是窗口的关闭按钮，两个 × 上下摞着容易点错把程序关了
         Item {
             id: header
-            x: Theme.space.md
-            width: parent.width - x - Theme.space.xs
+            x: Theme.space.xs
+            width: parent.width - x - Theme.space.md
             height: lib.headerHeight
+
+            IconButton {
+                id: closeButton
+                objectName: "libraryBack"
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
+                glyph: Theme.icon.back
+                glyphSize: 12
+                tip: "返回 (Esc)"
+                onClicked: lib.close()
+            }
 
             T.TextField {
                 id: field
                 objectName: "searchField"
                 visible: lib.shownMode === "search"
-                anchors.left: parent.left
-                anchors.right: closeButton.left
-                anchors.rightMargin: Theme.space.xs
+                anchors.left: closeButton.right
+                anchors.right: parent.right
+                anchors.leftMargin: Theme.space.xs
                 anchors.verticalCenter: parent.verticalCenter
                 height: Theme.layout.button
                 leftPadding: Theme.space.xl
@@ -161,26 +176,18 @@ Item {
             }
 
             Row {
-                visible: lib.shownMode === "history"
+                visible: lib.shownMode !== "search"
+                anchors.left: closeButton.right
+                anchors.leftMargin: Theme.space.xs
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: Theme.space.xs
-                Label { role: Theme.type.h2; text: "观看历史"; anchors.verticalCenter: parent.verticalCenter }
+                Label { role: Theme.type.h2; text: lib.titles[lib.shownMode] || ""; anchors.verticalCenter: parent.verticalCenter }
                 Label {
                     anchors.verticalCenter: parent.verticalCenter
                     role: Theme.type.caption
                     color: Theme.color.aside
-                    text: lib.historyItems.length > 0 ? lib.historyItems.length + " 部" : ""
+                    text: lib.items.length > 0 ? lib.items.length + " 部" : ""
                 }
-            }
-
-            IconButton {
-                id: closeButton
-                anchors.right: parent.right
-                anchors.verticalCenter: parent.verticalCenter
-                glyph: Theme.icon.close
-                glyphSize: 12
-                tip: "关闭 (Esc)"
-                onClicked: lib.close()
             }
         }
 
@@ -204,6 +211,10 @@ Item {
                 drama: MockData.drama(modelData.id)
                 detail: lib.detailOf(modelData.id)
                 current: String(modelData.id) === String(lib.currentDrama)
+                // 收藏夹里每行右侧一颗实心星：点它取消收藏
+                actionGlyph: lib.shownMode === "favorites" ? Theme.icon.favoriteFill : ""
+                actionTip: "取消收藏"
+                onActionClicked: Store.toggleFavorite(String(modelData.id))
                 onClicked: lib.choose(String(modelData.id))
             }
         }
@@ -291,6 +302,7 @@ Item {
             horizontalAlignment: Text.AlignHCenter
             color: Theme.color.aside
             text: lib.shownMode === "history" ? "点「查看全集」看过的剧会记在这里"
+                : lib.shownMode === "favorites" ? "点控件栏的星标收藏的剧会在这里，点开接着看"
                 : lib.query === "" ? "输入剧名搜索"
                 : lib.searching ? "搜索中…"
                 : "没有找到「" + lib.query + "」相关的短剧"

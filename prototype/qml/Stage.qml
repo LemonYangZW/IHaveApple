@@ -44,6 +44,7 @@ Rectangle {
     signal toggleEpisodes()
     signal showAllEpisodes()   // 底部「进入查看全剧」：进入全剧界面（本剧模式）
     signal toggleFitVideo()    // 窗口按当前视频比例调整尺寸
+    signal toggleFavorite()    // 收藏 / 取消收藏当前这部剧
     signal replay()            // 全剧终后从第 1 集重看
 
     color: Theme.color.stage
@@ -584,11 +585,13 @@ Rectangle {
         immersive: stage.immersive
         episodesOpen: stage.episodesOpen
         fitVideo: stage.fitVideo
+        favorite: !!stage.drama && Store.isFavorite(stage.drama.id)
         onTogglePlay: stage.togglePlay()
         onSeek: s => stage.seekTo(s)
         onToggleImmersive: stage.toggleImmersive()
         onToggleEpisodes: stage.toggleEpisodes()
         onToggleFitVideo: stage.toggleFitVideo()
+        onToggleFavorite: stage.toggleFavorite()
 
         HoverHandler { id: controlsHover; onHoveredChanged: if (hovered) stage.wake() }
     }

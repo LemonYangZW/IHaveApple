@@ -63,13 +63,25 @@ Rectangle {
         Qt.callLater(() => sheet.grid.showEpisode(ep, false))
         maybeLoadMore()          // 已经滑到推荐流末尾附近：先续一页，免得转圈回到第一部
     }
-    // 打开一部剧时从哪里起播：有进度接着上次；上次已看到 95% 以上，从下一集开头开始
+    // 打开一部剧时从哪里起播：有进度接着上次；上次已看到 95% 以上，从下一集开头开始。
+    // 时长优先用进度里记下的快照：重启后历史 / 收藏里的剧还没取剧集信息，按 90 秒兜底会把看到一半误判成看完
     function startOf(id) {
         const p = Store.progressOf(id)
         if (!p) return { ep: 0, pos: 0 }
-        if (p.pos >= MockData.duration(id, p.ep) * 0.95 && p.ep + 1 < MockData.drama(id).total)
+        const dur = p.dur > 0 ? p.dur : Backend.durationOf(String(id), p.ep)
+        if (dur > 0 && p.pos >= dur * 0.95 && p.ep + 1 < MockData.drama(id).total)
             return { ep: p.ep + 1, pos: 0 }
         return { ep: p.ep, pos: p.pos }
+    }
+    // 从观看历史 / 收藏夹点开：接着上次的进度播，并直接进全剧界面（滚轮翻本剧的集）
+    function continueWatching(id) {
+        if (String(id) !== String(dramaId)) open(id)
+        enterDramaView()
+    }
+    // 收藏 / 取消收藏当前这部剧（控件栏星标、快捷键）
+    function toggleFavorite() {
+        if (!dramaKnown) return
+        Store.toast(Store.toggleFavorite(dramaId) ? "已收藏，可在收藏夹里续播" : "已取消收藏")
     }
     // 预载往上拖会依次看到的 5 个节目（第 8.3 节）：信息流里是剧单接下来 5 部（各自要起播的那一集），
     // 选集面板 / 本剧模式里是本剧接下来 5 集。当前这个起播后才开始，免得和它抢带宽；后端逐个落盘。
@@ -155,7 +167,7 @@ Rectangle {
     // 滚动 / 上下键的语义取决于「当前在哪」：
     //  - 信息流模式（默认）：在频道推荐流里换一部短剧
     //  - 本剧模式：翻本剧的上一集 / 下一集。进过选集面板就一直保持，
-    //    直到点返回 / Esc、换剧、切频道或打开搜索 / 历史。第一集 / 最后一集再滚会被拦住。
+    //    直到点返回 / Esc、换剧（含从搜索 / 历史选了另一部）或切频道。第一集 / 最后一集再滚会被拦住。
     property bool dramaMode: false
     // 进了全剧界面（查看全集 / 选集）才算「在看这部剧」，记进观看历史；信息流里刷过的只记进度
     onDramaModeChanged: if (dramaMode && dramaKnown) Store.saveProgress(dramaId, currentEp, stage.position, true)
@@ -355,7 +367,25 @@ Rectangle {
         onToggleEpisodes: page.toggleEpisodes()
         onShowAllEpisodes: page.enterDramaView()
         onToggleFitVideo: page.fitVideoRequested()
+        onToggleFavorite: page.toggleFavorite()
         onReplay: page.replay()
+    }
+
+    // 弹幕层：压在画面上、只占上部，底部的控件和剧名信息照常可点。
+    // 数据由本地 SDK 的 /v1/danmaku 提供（Backend.danmaku），开关在设置页「播放」。
+    DanmakuLayer {
+        id: danmaku
+        x: stage.x
+        y: stage.y
+        width: stage.width
+        height: stage.height
+        z: 1
+        dramaId: page.dramaKnown ? String(page.dramaId) : ""
+        episode: page.currentEp
+        position: stage.position
+        playing: stage.playing && stage.phase === "playing"
+        danmakuEnabled: Store.prefs.danmaku
+        visible: danmakuEnabled && (stage.phase === "playing" || stage.phase === "buffering")
     }
 
     EpisodeSheet {
@@ -393,4 +423,6 @@ Rectangle {
     Shortcut { enabled: page.keysEnabled; sequence: Store.keys.mute; onActivated: Store.muted = !Store.muted }
     Shortcut { enabled: page.keysEnabled; sequence: Store.keys.speedDown; onActivated: page.stepSpeed(-1) }
     Shortcut { enabled: page.keysEnabled; sequence: Store.keys.speedUp; onActivated: page.stepSpeed(1) }
+    Shortcut { enabled: page.keysEnabled; sequence: Store.keys.favorite; onActivated: page.toggleFavorite() }
+    Shortcut { enabled: page.keysEnabled; sequence: Store.keys.danmaku; onActivated: Store.toggleDanmaku() }
 }

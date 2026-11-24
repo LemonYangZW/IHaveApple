@@ -195,14 +195,22 @@ def step6():
 
 
 def step7():
-    log("\n=== 6. 打开搜索页会退出本剧模式，之后滚轮换剧 ===")
+    log("\n=== 6. 打开再关掉搜索页仍在本剧模式；从搜索选了另一部剧才回到信息流 ===")
     page = st["page"]
     ev(win, "library.show('search')")
     QTest.qWait(900)
-    check(not bool(ev(page, "dramaMode")), "打开搜索页后退出了本剧模式",
+    check(bool(ev(page, "dramaMode")), "打开搜索页不退出本剧模式",
           str(ev(page, "dramaMode")))
     ev(win, "library.close()")
     QTest.qWait(900)
+    check(bool(ev(page, "dramaMode")), "关掉搜索页后仍在本剧模式",
+          str(ev(page, "dramaMode")))
+    drama_before = str(ev(page, "dramaId"))
+    other = str(ev(page, "neighborId(1)"))
+    ev(win, f"library.pick('{other}')")
+    QTest.qWait(1500)
+    check(not bool(ev(page, "dramaMode")), "从搜索选了另一部剧后回到信息流",
+          str(ev(page, "dramaMode")))
     drama_before = str(ev(page, "dramaId"))
     ev(page, "onWheel(1)")
     QTest.qWait(3500)

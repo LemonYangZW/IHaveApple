@@ -6,7 +6,7 @@
 用法：
     python main.py                                   # 按竖屏比例自动确定窗口大小
     python main.py --drama 3 --size 1440x900 --shot out.png   # 截图后退出
-可用 --page（演示状态）：player / episodes / search / history / settings / end / error / offline / immersive
+可用 --page（演示状态）：player / episodes / search / history / favorites / settings / end / error / offline / immersive
 """
 
 import argparse
@@ -27,7 +27,7 @@ from PySide6.QtWidgets import QApplication
 from hgservice import HgService
 from mpv_player import MpvPlayer
 from video_item import VideoItem, bind_player
-from native_window import install_aspect_resize
+from native_window import create_global_hotkey, install_aspect_resize
 from updater import Updater
 
 ROOT = Path(__file__).resolve().parent
@@ -157,6 +157,10 @@ def main() -> int:
     ctx.setContextProperty("launchShot", bool(args.shot))
     ctx.setContextProperty("systemReducedMotion", args.reduced_motion or system_reduced_motion())
     ctx.setContextProperty("nativeAspectResize", sys.platform == "win32")
+    # 一键隐藏用的系统级快捷键（Windows）；截图模式不注册，免得和正在用的播放器抢同一个键
+    hotkey = None if args.shot else create_global_hotkey()
+    app._hotkey = hotkey
+    ctx.setContextProperty("globalHotkey", hotkey)
 
     engine.load(QUrl.fromLocalFile(str(ROOT / "qml" / "Main.qml")))
     if not engine.rootObjects():
@@ -188,6 +192,8 @@ def main() -> int:
         QTimer.singleShot(22000, save_shot)
 
     rc = app.exec()
+    if hotkey is not None:
+        hotkey.shutdown()
     player.shutdown()
     backend.shutdown()
     if backend.reset_requested:

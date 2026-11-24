@@ -12,6 +12,7 @@ Item {
     property bool immersive: false
     property bool episodesOpen: false
     property bool fitVideo: false        // 窗口是否已按视频比例适配
+    property bool favorite: false        // 当前这部剧已收藏
 
     readonly property bool menuOpen: speedMenu.opened || qualityMenu.opened
     function closeMenus() { speedMenu.close(); qualityMenu.close() }
@@ -21,6 +22,7 @@ Item {
     signal toggleImmersive()
     signal toggleEpisodes()
     signal toggleFitVideo()
+    signal toggleFavorite()
 
     height: 96
 
@@ -89,6 +91,22 @@ Item {
             height: parent.height
             spacing: Theme.space.xxs
 
+            // 收藏：信息流和全剧界面都在这里，收藏的剧在标题栏「收藏夹」里点开即续播
+            IconButton {
+                objectName: "favoriteButton"
+                glyph: controls.favorite ? Theme.icon.favoriteFill : Theme.icon.favorite
+                tip: (controls.favorite ? "取消收藏" : "收藏") + Store.tipKey("favorite")
+                active: controls.favorite
+                onClicked: controls.toggleFavorite()
+            }
+            // 弹幕开关：开着时海棠红（与设置页「显示弹幕」是同一项）
+            IconButton {
+                objectName: "danmakuButton"
+                glyph: Theme.icon.danmaku
+                tip: (Store.prefs.danmaku ? "关闭弹幕" : "开启弹幕") + Store.tipKey("danmaku")
+                active: Store.prefs.danmaku
+                onClicked: Store.toggleDanmaku()
+            }
             // 选集：打开选集面板
             IconButton {
                 objectName: "episodesButton"

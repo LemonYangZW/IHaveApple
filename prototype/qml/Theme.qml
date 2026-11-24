@@ -124,6 +124,11 @@ QtObject {
         readonly property string refresh: String.fromCharCode(0xE72C)
         readonly property string search: String.fromCharCode(0xE721)
         readonly property string history: String.fromCharCode(0xE81C)
+        // 收藏：空心星 / 实心星（已收藏）；标题栏的收藏夹入口用空心星
+        readonly property string favorite: String.fromCharCode(0xE734)
+        readonly property string favoriteFill: String.fromCharCode(0xE735)
+        // 对话气泡：控件栏的弹幕开关（开着时海棠红）
+        readonly property string danmaku: String.fromCharCode(0xE8BD)
         readonly property string settings: String.fromCharCode(0xE713)
         // 方框 + 四角标记：窗口按视频源比例适配
         readonly property string fitVideo: String.fromCharCode(0xE9A6)

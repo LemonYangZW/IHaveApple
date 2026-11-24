@@ -8,11 +8,12 @@ Item {
     id: bar
 
     property bool fitted: false        // 窗口已「适应屏幕高度」
-    property string panel: ""          // 当前打开的面板："" | "search" | "history" | "settings"
+    property string panel: ""          // 当前打开的面板："" | "search" | "history" | "favorites" | "settings"
 
     signal toggleFit()
     signal search()
     signal history()
+    signal favorites()
     signal settings()
 
     height: Theme.layout.titleBar
@@ -47,7 +48,7 @@ Item {
     // 标题栏只放操作入口：剧名和简介移到底部信息区（那里空间够，长剧名能完整显示）
     // 左侧留空，整条都可以拖动窗口
 
-    // 入口：搜索、观看历史、设置（剧级 / 应用级操作放在顶部；集级操作「选集」在底部控件栏）
+    // 入口：搜索、观看历史、收藏夹、设置（剧级 / 应用级操作放在顶部；集级操作「选集」在底部控件栏）
     Row {
         id: tools
         anchors.right: buttons.left
@@ -71,6 +72,15 @@ Item {
             active: bar.panel === "history"
             focusPolicy: Qt.NoFocus
             onClicked: bar.history()
+        }
+        IconButton {
+            objectName: "favoritesButton"
+            glyph: Theme.icon.favorite
+            glyphSize: 14
+            tip: "收藏夹" + Store.tipKey("favorites")
+            active: bar.panel === "favorites"
+            focusPolicy: Qt.NoFocus
+            onClicked: bar.favorites()
         }
         IconButton {
             objectName: "settingsButton"

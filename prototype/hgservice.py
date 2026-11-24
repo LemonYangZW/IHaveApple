@@ -110,10 +110,15 @@ def feed_cache_dir():
     return os.path.join(current_cache_root(), "feeds")
 
 
+def danmaku_cache_dir():
+    return os.path.join(current_cache_root(), "danmaku")
+
+
 def _cache_subdirs(root):
     return (os.path.join(root, "covers"),
             os.path.join(root, "feeds"),
-            os.path.join(root, "video"))
+            os.path.join(root, "video"),
+            os.path.join(root, "danmaku"))
 
 
 def _ensure_cache_dirs(root):
@@ -379,6 +384,7 @@ class HgService(QObject):
     searchResults = Signal(str, list)         # query, [{id,title,total,covers,desc}]
     cacheChanged = Signal()                   # 缓存目录 / 占用 / 忙闲状态变了
     postersChanged = Signal()                 # 有新的首帧图（或缓存目录换了 / 清空了）
+    danmakuLoaded = Signal(str, int)          # dramaId, episode(0 起)：这一集的弹幕到了
     resetRequested = Signal()                 # 完全重置：界面退出程序，退出后由 main.py 清理并重启
 
     def __init__(self, parent=None):
@@ -405,6 +411,8 @@ class HgService(QObject):
         self._channel_last = {}  # channel -> 上次在该频道看的剧，切回来直接回到这部
         self._feed_ids = []      # 当前频道 feed 的剧 id 顺序（不含搜索并入的剧，滚动换剧按它走）
         self._prefetched = set() # (dramaId, ep, definition) 已排队预取的集，避免重复请求
+        self._danmaku = {}       # (dramaId, episodeId) -> [{id,text,offset,likes}]，内存缓存
+        self._danmaku_fetching = set()  # 正在翻页拉的 (dramaId, episodeId)
         self._preload_queue = [] # 预载队列 [(dramaId, ep, definition)]，按播放页给的顺序逐个落盘
         self._preloading = False # 预载线程是否在跑
         self._poster_rev = 0     # 首帧图版本号：QML 绑定读它，有新图时 +1 让 posterOf 重新求值
@@ -418,7 +426,8 @@ class HgService(QObject):
             print(f"[sdk] 缓存目录不可用（{self._cache_root}）：{e}，改用默认目录", flush=True)
             self._cache_root = _default_cache_root()
             _ensure_cache_dirs(self._cache_root)
-        self._cover_dir, self._feed_dir, self._video_dir = _cache_subdirs(self._cache_root)
+        (self._cover_dir, self._feed_dir, self._video_dir,
+         self._danmaku_dir) = _cache_subdirs(self._cache_root)
         self._cache_busy = False
         self._cache_size_text = ""
         self._load_feed_cache()
@@ -716,9 +725,11 @@ class HgService(QObject):
         try:
             self._stop_service()            # ohgd 还握着旧目录里的视频文件
             self._cache_root = new
-            self._cover_dir, self._feed_dir, self._video_dir = _cache_subdirs(new)
+            (self._cover_dir, self._feed_dir, self._video_dir,
+             self._danmaku_dir) = _cache_subdirs(new)
             with self._lock:
                 self._feed_cache.clear()
+                self._danmaku.clear()        # 弹幕缓存跟着目录走，换目录后重新拉
                 for d in self._dramas:
                     d["cover"] = ""          # 旧目录的封面不再引用，回占位后重新补
                     d["cover_tried"] = False
@@ -748,6 +759,8 @@ class HgService(QObject):
         before = _dir_size(self._cache_root)
         try:
             self._stop_service()
+            with self._lock:
+                self._danmaku.clear()          # 文件删了，内存里的也不再引用
             for name in os.listdir(self._cache_root):
                 p = os.path.join(self._cache_root, name)
                 try:
@@ -1257,7 +1270,7 @@ class HgService(QObject):
     # ---------- 封面 ----------
     @Slot(list)
     def rememberDramas(self, items):
-        """启动时把观看历史里的剧并入剧单（历史只存了快照：id / 标题 / 集数 / 简介）。
+        """启动时把观看历史 / 收藏夹里的剧并入剧单（只存了快照：id / 标题 / 集数 / 简介）。
         不在当前推荐流里的剧也解析得到，打开即可续播；封面已缓存的直接用，其余后台按 id 补。"""
         added = 0
         with self._lock:
@@ -1483,6 +1496,123 @@ class HgService(QObject):
             return
         print(f"[sdk] url ok ep={episode} {url[:60]}", flush=True)
         self.episodeReady.emit(drama_id, episode, url, definition)
+
+    # ---------- 弹幕 ----------
+    # 本地 SDK 的 /v1/danmaku 一页是服务端划出的一段播放时间，可能没有弹幕但 has_more 仍为真，
+    # 所以要一页页翻到 has_more 为假；整集一次拉完、按出现时间排好，播放时按位置直接取。
+    @Slot(str, int)
+    def danmaku(self, drama_id, episode):
+        """要这一集（0 起的序号）的弹幕：内存 / 磁盘有就直接回，没有就后台翻页拉。
+
+        弹幕不影响播放：失败只打日志，不弹 toast。
+        """
+        threading.Thread(target=self._danmaku_worker, args=(str(drama_id), int(episode)),
+                         daemon=True).start()
+
+    def _danmaku_worker(self, drama_id, episode):
+        # 接口要的是这一集的 id（Episode.ID），和播放地址同源
+        self._ensure_episodes(drama_id)
+        with self._lock:
+            eps = self._episodes.get(drama_id) or []
+            if not (0 <= episode < len(eps)):
+                return
+            eid = str(eps[episode]["id"])
+        key = (drama_id, eid)
+        with self._lock:
+            cached = self._danmaku.get(key)
+            if cached is None and key not in self._danmaku_fetching:
+                self._danmaku_fetching.add(key)
+                owner = True
+            else:
+                owner = False
+        if cached is not None:
+            self.danmakuLoaded.emit(drama_id, episode)
+            return
+        if not owner:
+            return                          # 另一个线程正在拉同一集，拉完会发信号
+        try:
+            items = self._read_danmaku_cache(drama_id, eid)
+            if items is None:
+                items = self._fetch_danmaku(drama_id, eid)
+                self._write_danmaku_cache(drama_id, eid, items)
+            with self._lock:
+                self._danmaku[key] = items
+        except AnonLimited:
+            print("[sdk] 弹幕：匿名额度用尽，这一集跳过", flush=True)
+            return
+        except Exception as e:
+            print(f"[sdk] 弹幕 {drama_id} ep={episode} 失败: {e}", flush=True)
+            return
+        finally:
+            with self._lock:
+                self._danmaku_fetching.discard(key)
+        self.danmakuLoaded.emit(drama_id, episode)
+
+    def _fetch_danmaku(self, drama_id, eid):
+        path = f"/v1/danmaku/{urllib.parse.quote(drama_id)}/{urllib.parse.quote(eid)}"
+        items = {}
+        cursor = ""
+        for _ in range(120):               # 一集最多 8093 条 / 每页 90 ≈ 90 页，留足余量
+            q = path + ("?cursor=" + urllib.parse.quote(cursor, safe="") if cursor else "")
+            page = _api(q, timeout=25, tries=2)
+            for it in page.get("items") or []:
+                text = str(it.get("text") or "").strip()
+                offset = int(it.get("offset_ms") or 0)
+                if not text or offset < 0:
+                    continue
+                items[it.get("id") or f"{offset}:{text}"] = {
+                    "id": str(it.get("id") or ""),
+                    "text": text,
+                    "offset": offset,
+                    "likes": int(it.get("likes") or 0),
+                }
+            cursor = page.get("cursor") or ""
+            if not page.get("has_more") or not cursor:
+                break
+        return sorted(items.values(), key=lambda d: (d["offset"], d["id"]))
+
+    def _danmaku_cache_path(self, drama_id, eid):
+        safe = lambda s: "".join(c for c in str(s) if c.isalnum()) or "x"
+        return os.path.join(self._danmaku_dir, f"{safe(drama_id)}_{safe(eid)}.json")
+
+    def _read_danmaku_cache(self, drama_id, eid):
+        """磁盘缓存：文件不存在返回 None（要联网拉），存在就返回列表（可能为空集）。"""
+        try:
+            with open(self._danmaku_cache_path(drama_id, eid), "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            return None
+        out = []
+        for it in data.get("items") or []:
+            text = str(it.get("text") or "").strip()
+            if not text:
+                continue
+            out.append({"id": str(it.get("id") or ""), "text": text,
+                        "offset": int(it.get("offset") or 0),
+                        "likes": int(it.get("likes") or 0)})
+        return out
+
+    def _write_danmaku_cache(self, drama_id, eid, items):
+        path = self._danmaku_cache_path(drama_id, eid)
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"episode": eid, "items": items}, f, ensure_ascii=False)
+            os.replace(tmp, path)
+        except Exception as e:
+            print(f"[sdk] 弹幕缓存写入失败: {e}", flush=True)
+
+    @Slot(str, int, result="QVariantList")
+    def danmakuFor(self, drama_id, episode):
+        """已经拉到的这一集弹幕（按出现时间排序）；还没到 / 没有就返回空列表。"""
+        drama_id = str(drama_id)
+        with self._lock:
+            eps = self._episodes.get(drama_id) or []
+            if not (0 <= episode < len(eps)):
+                return []
+            items = self._danmaku.get((drama_id, str(eps[episode]["id"])))
+        return items or []
 
     # ---------- 预取 / 预载 ----------
     @Slot(list, str)

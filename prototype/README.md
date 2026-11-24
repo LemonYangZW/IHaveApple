@@ -41,7 +41,7 @@ python main.py --drama 3     # 指定播放第 3 部
 | 参数 | 说明 |
 |---|---|
 | `--drama` | 要播放的剧。留空（默认）＝ 首屏用推荐；也支持 1–9 的序号、完整剧 id（19 位字符串） |
-| `--page` | 演示状态：`player`（默认）`episodes` `search` `history` `settings` `end` `error` `offline` `immersive` |
+| `--page` | 演示状态：`player`（默认）`episodes` `search` `history` `favorites` `settings` `end` `error` `offline` `immersive` |
 | `--size 540x960` | 指定初始窗口尺寸（调试用，非 9:16 时画面两侧会留黑）；不传则按 9:16 自动确定 |
 | `--shot out.png` | 22 秒后截图并退出 |
 | `--screen 1` | 在第 N 块显示器上居中启动（0 起，多屏时把播放器放到副屏） |
@@ -142,9 +142,17 @@ python -I tools/verify_interactions.py . out_dir
 ## 快捷键
 
 默认：`空格` 播放暂停 · `←` `→` 快退快进 5 秒 · `↑` `↓` 上一部 / 下一部短剧（与滚轮同义）· `E` 选集 · `F` 或双击舞台 沉浸模式 ·
-`M` 静音 · `[` `]` 倍速 · `Ctrl+F` 搜索 · `H` 观看历史 · `Ctrl+,` 设置 · `Esc` 逐层关闭（菜单 → 设置 / 搜索 / 历史 → 选集面板 → 沉浸模式）
+`M` 静音 · `[` `]` 倍速 · `Ctrl+F` 搜索 · `H` 观看历史 · `B` 收藏夹 · `S` 收藏 / 取消收藏 · `D` 弹幕开关 · `Ctrl+,` 设置 ·
+`Esc` 逐层关闭（菜单 → 设置 / 搜索 / 历史 → 选集面板 → 沉浸模式）· `Ctrl+Alt+H` **一键隐藏 / 恢复（全局）**
 
-除 `Esc` 外都可以在设置页修改。
+除 `Esc` 外都可以在设置页修改，可以设成组合键或单个键。
+
+一键隐藏用 `RegisterHotKey` 注册成系统级热键（`native_window.GlobalHotkey`，消息发给一个只收消息的隐藏窗口），
+焦点在别的程序里也能按：窗口、任务栏按钮、托盘图标一起藏起来并暂停，再按一次恢复。验收：
+
+```bash
+python -I tools/verify_boss_key.py   # 按键解析、系统级注册 / 占用、SendInput 模拟按键、隐藏恢复、真实播放的暂停续播
+```
 
 ## 信息流语义
 
@@ -220,4 +228,25 @@ python -I tools/verify_interactions.py . out_dir
 - 同一集去重；失败清标记可重试；额度类错误保留标记，不再反复撞上游。
 - 额度耗尽时立即失败并提示「上游暂时限制了匿名访问，换一部已缓存的剧或稍后再试」，
   不会卡在转圈（`_api` 对额度类错误不重试）。
+
+## 弹幕
+
+本地 SDK 提供 `GET /v1/danmaku/{seriesID}/{episodeID}`，只读、只给服务端精选的一小部分：
+
+- `cursor=` 翻页；`start_ms=` 第一次读时指定这一集的播放位置（毫秒，0 = 从头），之后改用上一页返回的 `cursor`。
+  两者同时给，SDK 会报 `invalid options`。
+- 一页 90 条（`DanmakuPageSize`），按播放时间窗口切页；**空页仍可能 `has_more=true`**，要一直翻到 `false`。
+- 单设备只能拿到精选弹幕的一部分（实测一集 total 8093，翻完只有 35–297 条）。没有发送 / 点赞接口。
+- 返回 `Danmaku{id,text,offset_ms,created_at,likes,plus_ones}`，`offset_ms` 相对这一集开头；不带发送者身份。
+
+原型里的实现：
+
+- `hgservice.py` 的 `danmaku(dramaId, episode)` 起后台线程翻页（最多 120 页），按 id 去重、按 offset 排序，
+  内存 + 磁盘双缓存（`<缓存根>/danmaku/<dramaId>_<epid>.json`），换缓存目录 / 清缓存时一起清。
+  失败只打日志、不弹 toast，不影响播放。
+- `qml/DanmakuLayer.qml` 自己走时钟（mpv 每 100ms 才刷新一次位置）：播放时按墙钟推进、暂停时停在真实位置、
+  拖进度条（位置跳变）时重新对时；按出现时间贪心分道，48 个 Text 复用；只占画面上半部，
+  避开标题栏 / 频道栏和底部的剧名与控件。
+- 开关在 设置 → 播放 →「显示弹幕」（`Store.prefs.danmaku`），控件栏的弹幕按钮（`D`）切的是同一项。
+
 

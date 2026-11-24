@@ -36,10 +36,4 @@ QtObject {
         }
         return dramas[0]
     }
-
-    // 单集时长（秒）：来自播放模型，未知时用 90 秒兜底
-    function duration(dramaId, ep) {
-        const d = Backend.durationOf(String(dramaId), ep)
-        return d > 0 ? d : 90
-    }
 }

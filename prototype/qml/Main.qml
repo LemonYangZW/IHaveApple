@@ -165,6 +165,39 @@ ApplicationWindow {
         player.saveNow()
         Qt.quit()
     }
+
+    // ---------- 一键隐藏（全局快捷键） ----------
+    // 窗口、任务栏按钮、托盘图标一起藏起来并暂停播放；再按一次原样恢复（含全屏）并接着播。
+    // 窗口藏起来后程序没有焦点，QML 的 Shortcut 收不到，所以由 main.py 注册系统级热键（globalHotkey）
+    readonly property var hotkey: typeof globalHotkey !== "undefined" ? globalHotkey : null
+    property bool bossHidden: false
+    property bool pausedByBoss: false
+    function toggleBossHidden() {
+        if (!bossHidden) {
+            bossHidden = true
+            if (player.playing) { pausedByBoss = true; player.togglePlay() }
+            player.saveNow()
+            win.hide()
+            return
+        }
+        bossHidden = false
+        if (immersive) win.showFullScreen(); else win.showNormal()
+        win.raise()
+        win.requestActivate()
+        if (pausedByBoss) { pausedByBoss = false; player.togglePlay() }
+    }
+    // 改键 / 启动时注册；被别的程序占用时提示（设置页里换一个键即可）
+    readonly property string bossSequence: Store.keys.bossKey
+    function registerBossKey() {
+        if (!hotkey) return
+        if (!hotkey.setSequence(bossSequence) && bossSequence)
+            Store.toast("「" + Store.keyText(bossSequence) + "」已被其他程序占用，一键隐藏没有生效，请在设置里换一个键")
+    }
+    onBossSequenceChanged: registerBossKey()
+    Connections {
+        target: win.hotkey
+        function onActivated() { win.toggleBossHidden() }
+    }
     onClosing: close => {
         if (Store.prefs.closeAction === "tray" && tray.available && !quitting) {
             close.accepted = false
@@ -199,12 +232,13 @@ ApplicationWindow {
         // 启动：按片源比例决定窗口比例（默认开）；显式给了 --size 就尊重用户指定的尺寸
         fitToVideo = (launchWidth > 0 || launchHeight > 0) ? false : Store.prefs.fitWindow
         windowAspectRequested(windowAspect)
+        registerBossKey()
         player.open(launchDrama)
         switch (launchPage) {
         case "immersive": setImmersive(true); break
         case "offline": Store.offline = true; break
         case "end": case "error": case "episodes": Qt.callLater(() => player.demo(launchPage)); break
-        case "search": case "history": Qt.callLater(() => library.show(launchPage)); break
+        case "search": case "history": case "favorites": Qt.callLater(() => library.show(launchPage)); break
         case "settings": settings.show(); break
         }
     }
@@ -257,6 +291,7 @@ ApplicationWindow {
         onToggleFit: win.toggleFit()
         onSearch: library.toggle("search")
         onHistory: library.toggle("history")
+        onFavorites: library.toggle("favorites")
         onSettings: settings.toggle()
     }
     // 顶部频道 tab：透明形式叠在画面上，和标题栏一起淡入淡出；全剧界面时换成 DramaBar。
@@ -323,7 +358,8 @@ ApplicationWindow {
             if (open) {
                 player.closeEpisodes()
                 settings.close()
-                player.dramaMode = false      // 打开搜索 / 历史 = 想找别的剧，退出本剧模式
+                // 不退出本剧模式：只看一眼就关掉、或选回同一部剧时仍留在全剧界面；
+                // 选了另一部剧由 player.open() 回到信息流模式
                 // 整页盖住了画面，暂停播放（关闭时恢复）
                 if (player.playing) { pausedByLibrary = true; player.togglePlay() }
             } else if (pausedByLibrary) {
@@ -333,6 +369,8 @@ ApplicationWindow {
         }
         onPick: id => {
             library.close()
+            // 观看历史 / 收藏夹：接着上次的进度播，直接进全剧界面（选回正在播的这部也一样）
+            if (library.shownMode !== "search") { player.continueWatching(id); return }
             // id 是 19 位字符串，比较时统一按字符串，避免类型不同误判成「另一部剧」
             if (String(id) !== String(player.dramaId)) player.open(id)
         }
@@ -349,10 +387,10 @@ ApplicationWindow {
         onOpenChanged: if (open) { player.closeEpisodes(); library.close() }
     }
 
-    // 托盘图标：仅在「关闭窗口时 → 最小化到托盘」时显示
+    // 托盘图标：仅在「关闭窗口时 → 最小化到托盘」时显示；一键隐藏时也藏起来
     Platform.SystemTrayIcon {
         id: tray
-        visible: Store.prefs.closeAction === "tray"
+        visible: Store.prefs.closeAction === "tray" && !win.bossHidden
         icon.source: Qt.resolvedUrl("../assets/icon.svg")
         tooltip: "IHaveApple · " + player.drama.title + " 第 " + (player.currentEp + 1) + " 集"
         onActivated: reason => {
@@ -382,6 +420,7 @@ ApplicationWindow {
 
     Shortcut { sequence: Store.keys.search; onActivated: library.show("search") }
     Shortcut { sequence: Store.keys.history; enabled: player.keysEnabled; onActivated: library.toggle("history") }
+    Shortcut { sequence: Store.keys.favorites; enabled: player.keysEnabled; onActivated: library.toggle("favorites") }
     Shortcut { sequence: Store.keys.settings; onActivated: settings.toggle() }
     // Esc 逐层关闭：倍速 / 画质菜单 → 设置页 / 搜索 / 历史面板 → 选集面板 → 全剧界面 → 沉浸模式。
     // 演示面板打开时让它自己处理 Esc（CloseOnEscape），避免与这里形成歧义快捷键。

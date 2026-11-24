@@ -34,20 +34,24 @@ Item {
         id: header
         width: parent.width
         height: 56
+        // 返回放在左侧：右上角是窗口的关闭按钮，两个 × 上下摞着容易点错把程序关了
+        IconButton {
+            id: backButton
+            objectName: "settingsBack"
+            anchors.left: parent.left
+            anchors.leftMargin: Theme.space.xs
+            anchors.verticalCenter: parent.verticalCenter
+            glyph: Theme.icon.back
+            glyphSize: 12
+            tip: "返回 (Esc)"
+            onClicked: page.close()
+        }
         Label {
-            x: Theme.space.md
+            anchors.left: backButton.right
+            anchors.leftMargin: Theme.space.xs
             anchors.verticalCenter: parent.verticalCenter
             role: Theme.type.h1
             text: "设置"
-        }
-        IconButton {
-            anchors.right: parent.right
-            anchors.rightMargin: Theme.space.xs
-            anchors.verticalCenter: parent.verticalCenter
-            glyph: Theme.icon.close
-            glyphSize: 12
-            tip: "关闭 (Esc)"
-            onClicked: page.close()
         }
     }
 
@@ -95,6 +99,12 @@ Item {
                 note: "画面左上角短暂显示「第 N 集」"
                 checked: Store.prefs.titleCard
                 onClicked: Store.prefs.titleCard = !Store.prefs.titleCard
+            }
+            ToggleRow {
+                title: "显示弹幕"
+                note: "这一集的精选弹幕从画面上部横穿，数据来自本地片源服务"
+                checked: Store.prefs.danmaku
+                onClicked: Store.prefs.danmaku = !Store.prefs.danmaku
             }
             ToggleRow {
                 title: "播放时阻止电脑休眠和息屏"
@@ -182,7 +192,9 @@ Item {
                 role: Theme.type.caption
                 color: Theme.color.aside
                 wrapMode: Text.WordWrap
-                text: "点击按键后按下新的组合键；Backspace 清除，Esc 取消。Esc 固定用于逐层关闭，不能修改。"
+                text: "点击按键后按下新的组合键或单个键；Backspace 清除，Esc 取消。Esc 固定用于逐层关闭，不能修改。\n"
+                    + "「一键隐藏」是全局快捷键：在其他程序里按也生效，同时藏起窗口、任务栏按钮和托盘图标并暂停，再按一次恢复。"
+                    + "设成单个键时，这个键在所有程序里都会被它占用。"
             }
             Label {
                 id: keyMessage
@@ -268,10 +280,18 @@ Item {
             SectionTitle { text: "数据" }
             DataRow {
                 title: "观看历史"
-                note: "看过的剧和每部看到第几集，升级后保留"
+                note: "看过的剧和每部看到第几集，升级后保留（收藏的剧清空后仍能续播）"
                 label: "清空"
                 confirmLabel: "确认清空"
                 onConfirmed: { Store.clearHistory(); Store.toast("观看历史已清空") }
+            }
+            DataRow {
+                title: "收藏夹"
+                note: Store.favorites.length > 0 ? "已收藏 " + Store.favorites.length + " 部，升级后保留" : "暂无"
+                label: "清空"
+                confirmLabel: "确认清空"
+                enabled: Store.favorites.length > 0
+                onConfirmed: { Store.clearFavorites(); Store.toast("收藏夹已清空") }
             }
             DataRow {
                 title: "搜索记录"
@@ -284,7 +304,7 @@ Item {
             }
             DataRow {
                 title: "完全重置"
-                note: "清除所有设置、观看历史、搜索记录、封面和视频缓存，然后重新打开播放器"
+                note: "清除所有设置、观看历史、收藏夹、搜索记录、封面和视频缓存，然后重新打开播放器"
                 label: "重置"
                 confirmLabel: "确认重置"
                 onConfirmed: Backend.resetAll()

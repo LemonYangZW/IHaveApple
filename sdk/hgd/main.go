@@ -401,11 +401,20 @@ func (a *app) handleSeriesBatch(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleDanmaku 一集弹幕：GET /v1/danmaku/{seriesID}/{episodeID}?cursor=&page_size=
+// handleDanmaku 一集弹幕：GET /v1/danmaku/{seriesID}/{episodeID}?cursor=&start_ms=&page_size=
+//
+// start_ms 是这一集的播放位置（毫秒，0 = 从头），第一次读用它；之后的页用上一页返回的
+// cursor，两者不能同时给（SDK 会拒绝）。一页是服务端划出的一段播放时间，可能没有弹幕
+// 但 has_more 仍为真，客户端要一直翻到 has_more 为假。
 func (a *app) handleDanmaku(w http.ResponseWriter, r *http.Request) {
 	a.sdkCall(w, r, func(ctx context.Context) (any, error) {
+		start := atoi(r.URL.Query().Get("start_ms"), 0)
+		if start < 0 {
+			start = 0
+		}
 		return a.cl.ListDanmaku(ctx, r.PathValue("seriesID"), r.PathValue("episodeID"), sdk.DanmakuOptions{
 			Cursor:   r.URL.Query().Get("cursor"),
+			StartMs:  int64(start),
 			PageSize: atoi(r.URL.Query().Get("page_size"), 0),
 		})
 	})
