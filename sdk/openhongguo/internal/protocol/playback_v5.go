@@ -10,15 +10,7 @@ import (
 )
 
 const (
-	// PathPlaybackV5 是播放模型接口。2026-11-20 起服务端把 dr_scene 从路径段
-	// 移进了请求体（App 里的模板是 POST /novel/player/multi_video_model/:dr_scene/v1/），
-	// 旧路径 /multi_video_model/player/v1 仍回 HTTP 200 但响应体为空，
-	// 所以它不再被当成「路由不可用」。
-	PathPlaybackV5 = "/novel/player/multi_video_model/v1/"
-	PathVideoTab   = "/reading/bookapi/video_tab/multi_video_model/v1/"
-	// 2026-11-23 的空体与 version_code 无关：74332 与 74532 都回 HTTP 200 空体，
-	// 真正被服务端卡住的是签名头 x-medusa 的内容（见 sdk/media.go 的
-	// degradePlaybackMedusa）。版本号继续跟随 APK 观测值，不参与这道闸门。
+	PathPlaybackV5      = "/novel/player/multi_video_model/player/v1"
 	PlaybackVersionCode = 74332
 	PlaybackVersionName = "7.4.3.32"
 )
@@ -72,36 +64,6 @@ func PlaybackV5Pairs(id SearchIdentity) [][2]string {
 		{"is_android_pad_screen", pad},
 		{"iid", id.InstallID},
 		{"device_id", id.DeviceID},
-	}
-}
-
-// VideoTabPairs is the bodyless video_tab query used when the V5 player
-// endpoint answers an empty model. The fixed phone template matches the
-// upstream 7.4.3.32 client; only the anonymous identity and episode vary.
-func VideoTabPairs(episodeID string, id SearchIdentity) [][2]string {
-	d := id.Device.OrDefault()
-	return [][2]string{
-		{"aid", AID},
-		{"app_name", AppName},
-		{"version_code", strconv.Itoa(PlaybackVersionCode)},
-		{"version_name", PlaybackVersionName},
-		{"channel", d.Channel},
-		{"device_platform", "android"},
-		{"device_type", d.Model},
-		{"os_version", d.OSVersion},
-		{"update_version_code", strconv.Itoa(PlaybackVersionCode)},
-		{"iid", id.InstallID},
-		{"cdid", id.CDID},
-		{"device_id", id.DeviceID},
-		{"video_id", episodeID},
-		{"video_id_type", "0"},
-		{"device_level", "1"},
-		{"need_all_video_definition", "1"},
-		{"need_mp4_align", "0"},
-		{"use_os_player", "0"},
-		{"video_platform", "1024"},
-		{"source", "0"},
-		{"from_video_id", ""},
 	}
 }
 

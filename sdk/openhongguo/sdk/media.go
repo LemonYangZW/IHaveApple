@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/beilunyang/openhongguo/internal/drm"
@@ -17,7 +16,7 @@ import (
 type PlaybackOptions struct{}
 
 // ResolvePlayback 加载一集的各清晰度地址、编码和码率。
-// 优先使用 V5 手机端协议，空响应时改走 video_tab，再不行才兼容旧播放接口。
+// 优先使用 V5 手机端协议，空响应或接口不支持时兼容旧播放接口。
 // 受保护的模型与 ErrDRMProtected 一起返回，可继续交给 ContentKey。
 func (c *Client) ResolvePlayback(ctx context.Context, episodeID string, _ PlaybackOptions) (*model.Playback, error) {
 	if !validID(episodeID) {
@@ -35,6 +34,16 @@ func (c *Client) ResolvePlayback(ctx context.Context, episodeID string, _ Playba
 		if err != nil {
 			return nil, err
 		}
+		// 先走实测可用的 video_tab：它一次就返回播放模型，签名走 video_tab 的整套头。
+		if tabRaw, tabErr := c.resolveVideoTab(ctx, p, episodeID); tabErr == nil && len(tabRaw) > 0 {
+			pb, parseErr := protocol.ParsePlayback(tabRaw, episodeID)
+			if parseErr == nil {
+				if pb.Protected {
+					return pb, ErrDRMProtected
+				}
+				return pb, nil
+			}
+		}
 		var raw []byte
 		for attempt := 0; attempt < 2; attempt++ {
 			if err = ctx.Err(); err != nil {
@@ -51,11 +60,6 @@ func (c *Client) ResolvePlayback(ctx context.Context, episodeID string, _ Playba
 			headers["Accept"] = "application/json; charset=utf-8,application/x-protobuf"
 			headers["x-xs-from-web"] = "0"
 			headers["Content-Encoding"] = "gzip"
-			// 首次用畸形 x-medusa 绕过服务端的签名判定；重试时恢复原样，
-			// 万一上游改口径重新接受内置签名，这里不用再改代码。
-			if attempt == 0 {
-				degradePlaybackMedusa(headers)
-			}
 			raw, _, err = c.doRaw(ctx, "POST", c.apiOrigin+protocol.PathPlaybackV5+"?"+query, headers, body)
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return nil, ctxErr
@@ -72,34 +76,21 @@ func (c *Client) ResolvePlayback(ctx context.Context, episodeID string, _ Playba
 				return nil, err
 			}
 			v5Err := err
-			tabRaw, tabErr := c.resolveVideoTab(ctx, p, episodeID)
-			if tabErr == nil && len(tabRaw) > 0 {
-				raw = tabRaw
-			} else {
-				if ctxErr := ctx.Err(); ctxErr != nil {
-					return nil, ctxErr
+			legacyBody, bodyErr := protocol.PlaybackBody(episodeID)
+			if bodyErr != nil {
+				return nil, bodyErr
+			}
+			ticket := c.clock().UnixMilli()
+			query, headers := sign.SignPlaybackPOST(protocol.PathPlayback, protocol.DeviceQueryPairs(c.identity(p)), ticket, p.DeviceID, protocol.VersionName, legacyBody, nil)
+			raw, _, err = c.doRaw(ctx, "POST", c.apiOrigin+protocol.PathPlayback+"?"+query, anonymousHeaders(c, p, ticket, headers), legacyBody)
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, ctxErr
+			}
+			if err != nil {
+				if playbackRouteUnavailable(err) {
+					return nil, v5Err
 				}
-				if tabErr != nil && !errors.Is(tabErr, ErrAnonymousLimited) && !playbackRouteUnavailable(tabErr) {
-					return nil, tabErr
-				}
-				legacyBody, bodyErr := protocol.PlaybackBody(episodeID)
-				if bodyErr != nil {
-					return nil, bodyErr
-				}
-				ticket := c.clock().UnixMilli()
-				query, headers := sign.SignPlaybackPOST(protocol.PathPlayback, protocol.DeviceQueryPairs(c.identity(p)), ticket, p.DeviceID, protocol.VersionName, legacyBody, nil)
-				legacyHeaders := anonymousHeaders(c, p, ticket, headers)
-				degradePlaybackMedusa(legacyHeaders)
-				raw, _, err = c.doRaw(ctx, "POST", c.apiOrigin+protocol.PathPlayback+"?"+query, legacyHeaders, legacyBody)
-				if ctxErr := ctx.Err(); ctxErr != nil {
-					return nil, ctxErr
-				}
-				if err != nil {
-					if playbackRouteUnavailable(err) {
-						return nil, v5Err
-					}
-					return nil, err
-				}
+				return nil, err
 			}
 		}
 		playback, err := protocol.ParsePlayback(raw, episodeID)
@@ -113,49 +104,9 @@ func (c *Client) ResolvePlayback(ctx context.Context, episodeID string, _ Playba
 	})
 }
 
-// 上游 2026-11-23 起，播放接口只要拿到「能被解出来的」x-medusa（内置签名或
-// openhongguo-signer 给的都一样）就回 HTTP 200 + 空体，目录读取不受影响。
-// 实测把 x-medusa 变成无法解析的畸形值（原值后追加标记字符）反而放行：
-// 服务端解不出签名时走宽松分支，仍然下发播放模型。
-// 只对播放类请求这么做；目录接口同样校验签名，篡改会让 feed/episodes 变空体。
-const playbackMedusaSentinel = "ff"
-
-// playbackRequest 判断是否是播放类请求（播放模型、video_tab、旧播放接口）。
-func playbackRequest(rawURL string) bool {
-	return strings.Contains(rawURL, "/novel/player/") || strings.Contains(rawURL, "/reading/bookapi/video_tab/")
-}
-
-func degradePlaybackMedusa(headers map[string]string) {
-	if v, ok := headers["x-medusa"]; ok && v != "" {
-		headers["x-medusa"] = v + playbackMedusaSentinel
-	}
-}
-
 func playbackRouteUnavailable(err error) bool {
 	var api *APIError
 	return errors.As(err, &api) && (api.HTTPStatus == 404 || api.HTTPStatus == 405)
-}
-
-// resolveVideoTab asks the bodyless video_tab route for the episode model.
-// It is a fallback for devices or episodes whose V5 player POST returns an
-// empty body; the response has the same TTVideoEngine model shape.
-func (c *Client) resolveVideoTab(ctx context.Context, p *DeviceProfile, episodeID string) ([]byte, error) {
-	ticket := c.clock().UnixMilli()
-	query, signed, err := c.playbackSigner.Sign(protocol.VideoTabPairs(episodeID, c.identity(p)), ticket, nil, nil)
-	if err != nil {
-		return nil, err
-	}
-	headers := anonymousHeaders(c, p, ticket, signed)
-	headers["User-Agent"] = protocol.PlaybackUserAgent(c.deviceOf(p))
-	headers["Accept"] = "application/json"
-	headers["x-xs-from-web"] = "0"
-	// video_tab 的抓包里带了游客 Cookie（含 ttreq），匿名设备档案没有 ttreq 时也要补上
-	if p != nil {
-		headers["Cookie"] = guestCookie(p)
-	}
-	degradePlaybackMedusa(headers)
-	raw, _, err := c.doRaw(ctx, "GET", c.apiOrigin+protocol.PathVideoTab+"?"+query, headers, nil)
-	return raw, err
 }
 
 // ContentKey 从播放模型算出加密分集的内容密钥。
@@ -178,4 +129,21 @@ func ContentKey(pb *model.Playback) (model.ContentKey, error) {
 		return model.ContentKey{}, fmt.Errorf("%w: %v", ErrDRMProtected, err)
 	}
 	return model.ContentKey{Hex: k.Hex, Version: k.Version}, nil
+}
+
+// resolveVideoTab 用 video_tab 一次拿到播放模型。
+func (c *Client) resolveVideoTab(ctx context.Context, p *DeviceProfile, episodeID string) ([]byte, error) {
+	dev := c.deviceOf(p)
+	query, signed, err := sign.SignVideoTab(protocol.VideoTabPairs(episodeID, c.identity(p)),
+		c.clock().UnixMilli(), p.DeviceID, protocol.PlaybackVersionName,
+		sign.VideoTabDevice{AppVersion: protocol.PlaybackVersionName, Channel: dev.Channel, Model: dev.Model, Brand: dev.Brand})
+	if err != nil {
+		return nil, err
+	}
+	headers := anonymousHeaders(c, p, c.clock().UnixMilli(), signed)
+	headers["User-Agent"] = protocol.PlaybackUserAgent(dev)
+	headers["Accept"] = "application/json; charset=utf-8,application/x-protobuf"
+	headers["x-xs-from-web"] = "0"
+	raw, _, err := c.doRaw(ctx, "GET", c.apiOrigin+protocol.PathVideoTab+"?"+query, headers, nil)
+	return raw, err
 }

@@ -2,6 +2,18 @@
 
 本项目的版本变更都记录在这里。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [未发布]
+
+### 修复
+
+- 取流恢复：2026-11-25 起红果把播放接口的校验改成了「x-medusa 必须与查询串一致」。现在先走 `GET /reading/bookapi/video_tab/multi_video_model/v1/`（一次就返回播放模型），签名按 App 7.4.3.32 的报文重写：消息体字段、`flags=4480…`、`F21=312`、计数器与环境形状都与真机对齐；旧的 `multi_video_model` / `video_model` 两条路保留为回退
+- 取流请求会带上注册下发的 `klink_egdi`；`video_tab` 的响应（`data.video_model_data[集id].video_model`）现在能被正确解析
+
+### 变更
+
+- `sdk/openhongguo` 更新到上游 v0.4.1（含 11-23 的 x-medusa 设备形态修复），并在其上实现了上面这份 7.4.3.32 报文
+- `sdk/hgd/hgd.exe` 重新编译
+
 ## [v0.1.13] - 2026-11-24
 
 ### 新增

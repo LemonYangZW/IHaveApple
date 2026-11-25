@@ -372,6 +372,9 @@ func (c *Client) loadOrRegister(ctx context.Context, needTicket bool) (*DevicePr
 	p.DeviceID = registered.DeviceID
 	p.InstallID = registered.InstallID
 	p.DeviceToken = ""
+	if registered.KlinkEGDI != "" {
+		p.KlinkEGDI = registered.KlinkEGDI
+	}
 	applyGuestCookies(p, cookies)
 	if needTicket && len(cookies) > 0 && p.TTReq == "" {
 		return nil, fmt.Errorf("%w: guest ticket missing", ErrAnonymousLimited)
@@ -439,7 +442,8 @@ func randInt64() (int64, error) {
 func (c *Client) identity(p *DeviceProfile) protocol.SearchIdentity {
 	return protocol.SearchIdentity{
 		DeviceID: p.DeviceID, InstallID: p.InstallID, CDID: p.CDID, OpenUDID: p.OpenUDID,
-		Device: c.deviceOf(p),
+		KlinkEGDI: p.KlinkEGDI,
+		Device:    c.deviceOf(p),
 	}
 }
 

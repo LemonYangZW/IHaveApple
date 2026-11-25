@@ -152,6 +152,8 @@ type SearchIdentity struct {
 	InstallID string
 	CDID      string
 	OpenUDID  string
+	// KlinkEGDI 是注册响应下发的设备凭据，取流接口的查询串会带上。
+	KlinkEGDI string
 	// Device is the phone the profile registered as; zero fields fall back
 	// to model.DefaultDevice.
 	Device model.Device

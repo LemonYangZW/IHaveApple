@@ -33,11 +33,6 @@ func (t *remoteSigner) Do(ctx context.Context, req *Request) (*Response, error) 
 		if err := t.sign(ctx, req); err != nil {
 			return nil, fmt.Errorf("%w: %v", ErrSignerUnavailable, err)
 		}
-		// 播放接口目前只对「解不出来的」x-medusa 放行，签名服务给出的真签名
-		// 一样会被回空体，所以播放请求签完仍然要退化成畸形值。
-		if playbackRequest(req.URL) {
-			degradePlaybackMedusa(req.Headers)
-		}
 	}
 	return t.next.Do(ctx, req)
 }
