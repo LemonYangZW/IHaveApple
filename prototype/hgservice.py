@@ -187,6 +187,17 @@ def _api(path, timeout=40, tries=4, gap=2.5):
     raise last
 
 
+def _url_expired(expires_at, margin=90):
+    """播放地址是否已过期（留 margin 秒余量，免得刚发出去就失效）。"""
+    try:
+        exp = int(expires_at or 0)
+    except (TypeError, ValueError):
+        return False
+    if exp <= 0:
+        return False
+    return time.time() + margin >= exp
+
+
 def _file_url(path):
     return "file:///" + os.path.abspath(path).replace("\\", "/")
 
@@ -1207,6 +1218,7 @@ class HgService(QObject):
                     "label": e.get("title") or f"第{e.get('number', j + 1)}集",
                     "duration": int(e.get("duration_seconds") or 0),
                     "urls": {},          # _url_key(definition, strict) -> 播放地址（各清晰度地址不同，分别缓存）
+                    "expiry": {},        # _url_key -> 上游给的过期时间戳（秒）；过期后必须重新解析
                     "resolving": set(),  # 正在解析的 _url_key
                 }
                 for j, e in enumerate(eps)
@@ -1448,6 +1460,12 @@ class HgService(QObject):
             ep = eps[episode]
             key = _url_key(definition, strict)
             url = ep["urls"].get(key)
+            # 上游地址带过期时间（约 6 小时）。长会话里复用过期地址只会换来 CDN 403，
+            # 表现就是「点开就报错、播不了」，所以过期就丢掉重新解析。
+            if url and _url_expired(ep["expiry"].get(key)):
+                print(f"[sdk] url expired ep={episode} def={definition}，重新解析", flush=True)
+                ep["urls"].pop(key, None)
+                url = None
             if url and not need_cache:
                 self.episodeReady.emit(drama_id, episode, url, definition)
                 return
@@ -1468,6 +1486,7 @@ class HgService(QObject):
                 url = info.get("stream_url")
                 duration = int(info.get("duration_seconds") or 0)
                 cached = bool(info.get("cached"))
+                expires_at = int(info.get("expires_at") or 0)
             if need_cache and url and not cached:
                 _wait_cached(eid, _url_definition(url, definition or QUALITY))
         except AnonLimited:
@@ -1489,6 +1508,7 @@ class HgService(QObject):
             ep["resolving"].discard(rkey)
             if url:
                 ep["urls"][key] = url
+                ep["expiry"][key] = expires_at
             if duration:
                 ep["duration"] = duration
         if not url:
@@ -1695,6 +1715,7 @@ class HgService(QObject):
                 with self._lock:
                     if info.get("stream_url"):
                         ep["urls"][_url_key(definition, False)] = info["stream_url"]
+                        ep["expiry"][_url_key(definition, False)] = int(info.get("expires_at") or 0)
                     d = int(info.get("duration_seconds") or 0)
                     if d:
                         ep["duration"] = d

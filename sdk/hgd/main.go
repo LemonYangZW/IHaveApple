@@ -56,6 +56,7 @@ var (
 	exposeKey  = flag.Bool("expose-key", false, "是否在 /v1/play 响应里返回 content_key")
 	configPath = flag.String("config", "config.json", "配置文件路径，不存在则忽略")
 	padMode    = flag.Bool("pad", false, "以平板（PAD）设备身份注册（dragon_device_type=pad）")
+	logPath    = flag.String("log", "", "日志文件，空=写到缓存目录下的 ohgd.log")
 )
 
 // ---------- 应用 ----------
@@ -194,6 +195,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("创建 SDK 客户端失败: %v", err)
 	}
+
+	setupLog(*logPath, *cacheDir)
 
 	a := &app{cl: cl, ff: *ffmpegBin, cache: *cacheDir, warming: map[string]bool{}}
 	a.trimCache()
@@ -602,10 +605,10 @@ func (a *app) handlePlay(w http.ResponseWriter, r *http.Request) {
 	def := r.URL.Query().Get("definition")
 	strict := r.URL.Query().Get("strict") == "1"
 
-	// 缓存优先：已经落过盘的集直接用本地文件，不再向上游解析。
-	// 上游播放接口会拒掉“用过的设备”（返回 200 + 空体），已缓存的集不该因此不可播。
-	// strict=1（客户端主动换清晰度）只认请求的那一档缓存，没有就向上游解析。
-	if cachedDef, ok := a.cacheLookup(epID, def, strict); ok {
+	// 缓存优先，但**只认请求的那一档**：以前这里会在 1080p 未落盘时悄悄用 720p，
+	// 于是「先缓存了 720p」的集永远是 720p，再也不会去取 1080p。
+	// strict=1（客户端主动换清晰度）同样是只看请求的那一档。
+	if cachedDef, ok := a.exactCached(epID, def); ok {
 		scheme := "http"
 		if r.TLS != nil {
 			scheme = "https"
@@ -625,6 +628,26 @@ func (a *app) handlePlay(w http.ResponseWriter, r *http.Request) {
 
 	pb, st, key, err := a.resolve(r.Context(), epID, def)
 	if err != nil {
+		log.Printf("取流失败 ep=%s def=%q strict=%v: %v", epID, def, strict, err)
+		// 上游不可用时退回任意已缓存的一档，离线也能接着看
+		if cachedDef, ok := a.cachedDefinition(epID, def); ok {
+			log.Printf("取流回退到缓存 ep=%s -> %s", epID, cachedDef)
+			scheme := "http"
+			if r.TLS != nil {
+				scheme = "https"
+			}
+			resp := playResponse{
+				EpisodeID:  epID,
+				Definition: cachedDef,
+				StreamURL:  streamURL(scheme, r.Host, epID, cachedDef, strict),
+				Cached:     true,
+				Qualities:  []qualityItem{{Definition: cachedDef}},
+			}
+			if a.probeCached(epID, cachedDef, &resp) {
+				writeJSON(w, 200, resp)
+				return
+			}
+		}
 		writeErr(w, 502, "play failed", err)
 		return
 	}
@@ -667,14 +690,20 @@ func (a *app) handleStream(w http.ResponseWriter, r *http.Request) {
 	def := r.URL.Query().Get("definition")
 	strict := r.URL.Query().Get("strict") == "1"
 
-	// 不调 resolve 也能服务已缓存的集：上游不可用时缓存仍然可播
-	if cachedDef, ok := a.cacheLookup(epID, def, strict); ok {
+	// 请求的那一档已落盘就直接发文件；否则向上游解析（不再悄悄降到别的档）
+	if cachedDef, ok := a.exactCached(epID, def); ok {
 		a.serveCached(w, r, epID, cachedDef)
 		return
 	}
 
 	pb, st, key, err := a.resolve(r.Context(), epID, def)
 	if err != nil {
+		log.Printf("取流失败 ep=%s def=%q strict=%v: %v", epID, def, strict, err)
+		if cachedDef, ok := a.cachedDefinition(epID, def); ok {
+			log.Printf("取流回退到缓存 ep=%s -> %s", epID, cachedDef)
+			a.serveCached(w, r, epID, cachedDef)
+			return
+		}
 		writeErr(w, 502, "resolve failed", err)
 		return
 	}
@@ -770,6 +799,7 @@ func (a *app) handlePrewarm(w http.ResponseWriter, r *http.Request) {
 
 	pb, st, key, err := a.resolve(r.Context(), epID, def)
 	if err != nil {
+		log.Printf("预热取流失败 ep=%s def=%q: %v", epID, def, err)
 		writeErr(w, 502, "resolve failed", err)
 		return
 	}
@@ -957,6 +987,29 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	_ = enc.Encode(v)
 }
 
+// setupLog 把日志同时写到 stderr 和文件。播放器以 CREATE_NO_WINDOW 拉起 ohgd 时
+// stderr 会被丢掉，出问题时只能靠这个文件回看是哪一集、哪一档失败。
+func setupLog(path, cache string) {
+	if path == "" {
+		if cache == "" {
+			return
+		}
+		path = filepath.Join(cache, "ohgd.log")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return
+	}
+	if info, err := os.Stat(path); err == nil && info.Size() > 2<<20 {
+		_ = os.Rename(path, path+".1")
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return
+	}
+	log.SetOutput(io.MultiWriter(os.Stderr, f))
+	log.SetFlags(log.LstdFlags)
+}
+
 func writeErr(w http.ResponseWriter, code int, msg string, err error) {
 	writeJSON(w, code, map[string]any{"error": msg, "detail": fmt.Sprint(err)})
 }
@@ -1129,15 +1182,15 @@ func (a *app) cachedDefinition(epID, def string) (string, bool) {
 	return "", false
 }
 
-// cacheLookup 按模式查缓存：strict 时只认请求的清晰度（为空则用默认清晰度），否则同 cachedDefinition。
-func (a *app) cacheLookup(epID, def string, strict bool) (string, bool) {
-	if !strict {
-		return a.cachedDefinition(epID, def)
-	}
+// exactCached 只认请求的那一档（definition 为空时用默认清晰度）。
+func (a *app) exactCached(epID, def string) (string, bool) {
 	if def == "" {
 		def = *quality
 	}
-	return def, a.cacheReady(epID, def)
+	if a.cacheReady(epID, def) {
+		return def, true
+	}
+	return "", false
 }
 
 // streamURL 生成 /v1/stream 地址；strict 要一路带下去，否则 /v1/stream 又会退回任意一档缓存。
