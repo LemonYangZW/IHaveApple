@@ -7,7 +7,7 @@
 - 选集面板、搜索、观看历史、设置（快捷键、自动连播、最小化暂停等）
 - 播放内核是 libmpv，界面是 Qt 6 QML
 
-设计文档见 [docs/windows-ui-design.md](docs/windows-ui-design.md)。
+设计文档见 [docs/windows-ui-design.md](docs/windows-ui-design.md)；踩过的坑与实测结论见 [docs/pitfalls.md](docs/pitfalls.md)。
 
 ## 下载安装
 
