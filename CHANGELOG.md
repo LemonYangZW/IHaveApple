@@ -2,6 +2,18 @@
 
 本项目的版本变更都记录在这里。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [未发布]
+
+### 修复
+
+- 取流改用**官方客户端真正调用的那个端点**：`POST /novel/player/multi_video_model/player/v1`（body 是 gzip 过的 `biz_param` + `mixed_video_id_map`）。之所以 v0.1.14 只能退到 `video_tab`，是因为 POST 的 `x-medusa` 少了「body 的 MD5 也要算进摘要」这一步，服务端直接回 200 空体；现在摘要同时覆盖查询串与 body（外加 `x-ss-stub`），端点一次就能返回完整播放模型，`video_tab` / 旧 `multi_video_model` / `video_model` 三条保留为回退
+- 澄清一条旧结论：`device_level` 并不影响码阶。用播放器端点把 1/2/3/4 全试了一遍，下发的码流完全一样；`bytevc2`（H.266）只跟片源有关，与 `device_level` 无关，因此维持 `device_level=1`
+
+### 变更
+
+- `sdk/openhongguo`：签名层把 `video_tab` 与播放器端点合并成同一套报文封装（`signSealed`），新增 `SignPlayerModel`；媒体层首选播放器端点，`video_tab` 降为回退
+- `sdk/hgd/hgd.exe` 重新编译
+
 ## [v0.1.14] - 2026-11-25
 
 ### 修复

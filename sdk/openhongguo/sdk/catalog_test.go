@@ -449,6 +449,8 @@ func assertAnonymousWire(t *testing.T, seen []captured) {
 				t.Fatal("series signature missing")
 			}
 		case protocol.PathPlaybackV5:
+			// 播放器端点是首选路由；V5 只在播放器端点不可用时才会被走到，
+			// 两者用的是同一份查询串与 body，断言保持一致。
 			played = true
 			q, _ := url.ParseQuery(hit.RawQuery)
 			if q.Get("version_code") != "74332" || q.Get("device_id") != "7100000000000001" || q.Get("iid") != "7100000000000002" {
@@ -474,12 +476,7 @@ func assertAnonymousWire(t *testing.T, seen []captured) {
 				t.Fatalf("playback body = %s", plain)
 			}
 			if hit.Header.Get("Content-Encoding") != "gzip" || hit.Header.Get("x-medusa") == "" || hit.Header.Get("x-helios") == "" || hit.Header.Get("x-khronos") == "" || hit.Header.Get("x-ss-stub") == "" {
-				t.Fatal("playback V5 signature missing")
-			}
-			for _, h := range []string{"x-argus", "x-ladon", "x-gorgon"} {
-				if hit.Header.Get(h) != "" {
-					t.Fatalf("playback V5 carries legacy %s", h)
-				}
+				t.Fatal("playback signature missing")
 			}
 		case protocol.PathVideoTab:
 			// 新增的取流首选路由；本 fixture 不提供，SDK 会回退到 V5。

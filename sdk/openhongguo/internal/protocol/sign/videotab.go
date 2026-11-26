@@ -1,18 +1,29 @@
 package sign
 
 import (
+	"encoding/hex"
 	"fmt"
+	"strings"
 	"time"
 )
 
-// VideoTab 是取流用的 video_tab 请求（2026-11-25 由可见客户端抓包对齐）。
-// 服务端只校验 x-medusa：它的消息体必须与查询串一致，否则回 200 空体。
+// VideoTab 是取流请求里的设备形态（2026-11-25 对齐可见客户端，
+// 2026-11-26 用真机 logcat 的播放器请求复核）。
+// 服务端只校验 x-medusa：它的消息体必须与查询串（POST 时还包括 body）一致，
+// 否则回 200 空体。
 type VideoTabDevice struct {
 	AppVersion string
 	Channel    string
 	Model      string
 	Brand      string
 }
+
+// 取流端点。video_tab 是信息流预览接口（回退用），播放器端点才是官方客户端
+// 真正调用的那一个。
+const (
+	PathVideoTab    = "/reading/bookapi/video_tab/multi_video_model/v1/"
+	PathPlayerModel = "/novel/player/multi_video_model/player/v1"
+)
 
 type videoTabMsg struct {
 	DeviceID string
@@ -83,6 +94,18 @@ func buildVideoTabMessage(m videoTabMsg) []byte {
 // SignVideoTab 为 video_tab 的查询串生成整套签名头（x-gorgon/argus/ladon + x-medusa/helios）。
 // 返回实际要发送的查询串（含 _rticket）。
 func SignVideoTab(pairs [][2]string, nowMillis int64, deviceID, versionName string, dev VideoTabDevice) (string, map[string]string, error) {
+	return signSealed(PathVideoTab, pairs, nil, nowMillis, deviceID, versionName, dev)
+}
+
+// SignPlayerModel 为播放器取流端点生成整套签名头。和 video_tab 的区别是它带
+// 请求体（biz_param + mixed_video_id_map 的 gzip）：x-medusa 的摘要要把 body
+// 的 MD5 一起算进去，服务端才认（2026-11-26 实测）。
+func SignPlayerModel(pairs [][2]string, body []byte, nowMillis int64, deviceID, versionName string, dev VideoTabDevice) (string, map[string]string, error) {
+	return signSealed(PathPlayerModel, pairs, body, nowMillis, deviceID, versionName, dev)
+}
+
+// signSealed 是 video_tab 与播放器端点共用的报文封装。
+func signSealed(path string, pairs [][2]string, body []byte, nowMillis int64, deviceID, versionName string, dev VideoTabDevice) (string, map[string]string, error) {
 	device := dev
 	if device.AppVersion == "" {
 		device.AppVersion = versionName
@@ -92,15 +115,15 @@ func SignVideoTab(pairs [][2]string, nowMillis int64, deviceID, versionName stri
 	var in medusaV5Input
 	ok := false
 	for attempt := int64(0); attempt < 64 && !ok; attempt++ {
-		query, headers = SignPOST("/reading/bookapi/video_tab/multi_video_model/v1/", pairs,
+		query, headers = SignPOST(path, pairs,
 			nowMillis+attempt*1000, deviceID, versionName, nil, nil)
 		rt := queryValue(query, "_rticket")
 		var ms int64
 		fmt.Sscanf(rt, "%d", &ms)
-		in, ok = newMedusaV5Input(query, nil, uint32(ms/1000))
+		in, ok = newMedusaV5Input(query, body, uint32(ms/1000))
 	}
 	if !ok {
-		return "", nil, fmt.Errorf("video_tab: no supported digest variant")
+		return "", nil, fmt.Errorf("%s: no supported digest variant", path)
 	}
 	nonce := randomVideoTabNonce(25)
 	msg := buildVideoTabMessage(videoTabMsg{
@@ -111,6 +134,10 @@ func SignVideoTab(pairs [][2]string, nowMillis int64, deviceID, versionName stri
 		DevT1: int64(in.ts)*1000 - 2023, DevT2: int64(in.ts)*1000 + 48,
 	})
 	ent := drawEntropy(int64(in.ts) * 1000)
+	if body != nil {
+		sum := md5Raw(body)
+		headers["x-ss-stub"] = strings.ToUpper(hex.EncodeToString(sum[:]))
+	}
 	headers["x-medusa"] = sealMedusaV5(msg, in, ent.medusaRandom(), videoTabFlags)
 	headers["x-helios"] = heliosV5(in.ts, ent.HeliosRandom)
 	headers["x-khronos"] = fmt.Sprintf("%d", in.ts)

@@ -69,9 +69,9 @@ func PlaybackV5Pairs(id SearchIdentity) [][2]string {
 
 // PlaybackV5Body 只压缩一次；调用方将返回的原始字节同时用于签名和发送。
 //
-// device_level 保持 1，和 App 的 3 不同：3 会让服务端把 1080p 以下的码流
-// 都换成 bytevc2（2026-11-18 实测），App 自带解码器，ffmpeg 和 mpv 都解不了；
-// 1 下发的全是 bytevc1。
+// device_level 保持 1，和 App 的 3 不同。曾经以为 3 会把 1080p 以下的码流换成
+// bytevc2（App 自带解码器，ffmpeg/mpv 解不了），但 2026-11-26 用播放器端点
+// 把 1/2/3/4 都试了一遍：码阶完全一致，bytevc2 只跟片源有关，与 device_level 无关。
 func PlaybackV5Body(episodeID string) ([]byte, error) {
 	body, err := jsonMarshal(map[string]any{
 		"biz_param": map[string]any{

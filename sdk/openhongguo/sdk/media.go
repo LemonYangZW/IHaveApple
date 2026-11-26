@@ -34,7 +34,16 @@ func (c *Client) ResolvePlayback(ctx context.Context, episodeID string, _ Playba
 		if err != nil {
 			return nil, err
 		}
-		// 先走实测可用的 video_tab：它一次就返回播放模型，签名走 video_tab 的整套头。
+		// 先走官方客户端的播放器端点（POST + gzip body），报文与真机一致。
+		if playerRaw, playerErr := c.resolvePlayerModel(ctx, p, episodeID, body); playerErr == nil && len(playerRaw) > 0 {
+			if pb, parseErr := protocol.ParsePlayback(playerRaw, episodeID); parseErr == nil {
+				if pb.Protected {
+					return pb, ErrDRMProtected
+				}
+				return pb, nil
+			}
+		}
+		// 回退一：video_tab（信息流预览接口，GET，码阶与播放器端点相同）。
 		if tabRaw, tabErr := c.resolveVideoTab(ctx, p, episodeID); tabErr == nil && len(tabRaw) > 0 {
 			pb, parseErr := protocol.ParsePlayback(tabRaw, episodeID)
 			if parseErr == nil {
@@ -129,6 +138,26 @@ func ContentKey(pb *model.Playback) (model.ContentKey, error) {
 		return model.ContentKey{}, fmt.Errorf("%w: %v", ErrDRMProtected, err)
 	}
 	return model.ContentKey{Hex: k.Hex, Version: k.Version}, nil
+}
+
+// resolvePlayerModel 调用官方客户端的播放器取流端点：POST 一集的播放模型，
+// body 是 gzip 过的 biz_param + mixed_video_id_map。查询串仍走 PlaybackV5Pairs
+// 的顺序，x-medusa 的摘要要同时覆盖查询串与 body（2026-11-26 真机复核）。
+func (c *Client) resolvePlayerModel(ctx context.Context, p *DeviceProfile, episodeID string, body []byte) ([]byte, error) {
+	dev := c.deviceOf(p)
+	query, signed, err := sign.SignPlayerModel(protocol.PlaybackV5Pairs(c.identity(p)), body,
+		c.clock().UnixMilli(), p.DeviceID, protocol.PlaybackVersionName,
+		sign.VideoTabDevice{AppVersion: protocol.PlaybackVersionName, Channel: dev.Channel, Model: dev.Model, Brand: dev.Brand})
+	if err != nil {
+		return nil, err
+	}
+	headers := anonymousHeaders(c, p, c.clock().UnixMilli(), signed)
+	headers["User-Agent"] = protocol.PlaybackUserAgent(dev)
+	headers["Accept"] = "application/json; charset=utf-8,application/x-protobuf"
+	headers["x-xs-from-web"] = "0"
+	headers["Content-Encoding"] = "gzip"
+	raw, _, err := c.doRaw(ctx, "POST", c.apiOrigin+protocol.PathPlaybackV5+"?"+query, headers, body)
+	return raw, err
 }
 
 // resolveVideoTab 用 video_tab 一次拿到播放模型。
