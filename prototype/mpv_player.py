@@ -1,9 +1,9 @@
-"""mpv_player — libmpv 播放内核（SW 渲染 → QImage → QML 纹理）
+"""mpv_player — libmpv 播放内核（SW 渲染 → QImage → QML Image）
 
 为什么用 SW 渲染而不是 OpenGL render API：
   QML 的渲染在 QSG 线程，libmpv 的 GL render API 需要绑定同一个 GL 上下文，
-  在 Python/ctypes 下与该线程协作不稳定。SW 渲染拿到 RGB 帧后转成 QImage，
-  由 VideoItem（纹理节点）绘制，简单可靠且不依赖 QtMultimedia。
+  在 Python/ctypes 下与该线程协作不稳定。SW 渲染直接画进 QImage，
+  经图片提供器交给 QML 的 Image 显示（见 video_item.py），简单可靠且不依赖 QtMultimedia。
 
 线程：渲染在独立的渲染线程里进行，绝不放在 GUI 线程。
   mpv_render_context_render 默认（BLOCK_FOR_TARGET_TIME=1）会阻塞到这一帧的显示时刻才返回，
@@ -60,7 +60,7 @@ class MpvPlayer(QObject):
     """单实例播放器：一次只播一条，切集用 loadfile replace"""
 
     ready = Signal()                 # 首帧就绪
-    frameReady = Signal()            # 有新帧可绘制
+    frameReady = Signal()            # 有新帧可绘制（frameSerial 加一）
     positionChanged = Signal()
     durationChanged = Signal()
     stateChanged = Signal()
@@ -70,16 +70,13 @@ class MpvPlayer(QObject):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._image = None               # 最新一帧（深拷贝，交给 VideoItem 绘制）
+        self._image = None               # 最新一帧（每帧一张新 QImage，交给 QML 显示后不再改动）
+        self._serial = 0                 # 帧序号：QML 的 Image 靠它换地址重新取帧
         self._handle = None
         self._rc = C.c_void_p()
-        self._buf = None
         self._size = (C.c_int * 2)(0, 0)
         self._fmt = C.c_char_p(b"bgra")   # 不用 bgr0：填充字节为 0，纹理 alpha=0，截图里画面是透明的
-        self._stride = C.c_size_t(0)
-        self._ptr = C.c_void_p(0)
-        self._wh = (0, 0)
-        self._target_wh = (0, 0)     # 控件尺寸（VideoItem 上报），0 = 未上报
+        self._target_wh = (0, 0)     # 控件尺寸（VideoFrame 上报），0 = 未上报
         self._video_wh = (0, 0)      # 源视频尺寸，GUI 线程轮询后缓存给渲染线程
         # 装载代数：每次 loadfile +1。渲染线程在一帧渲染前后各看一次，变了就丢掉这一帧 ——
         # 否则装载前就开始渲染的旧片那一帧会被当成新片首帧（ready 提前触发，切集时闪一下上一集的画面）
@@ -139,13 +136,6 @@ class MpvPlayer(QObject):
             self._rc, C.cast(self._cb, C.c_void_p), None)
 
     # ---------- 渲染 ----------
-    def _alloc(self, w, h):
-        self._buf = (C.c_char * (w * h * 4))()
-        self._size[0], self._size[1] = w, h
-        self._stride = C.c_size_t(w * 4)
-        self._ptr = C.cast(self._buf, C.c_void_p)
-        self._wh = (w, h)
-
     def _render_loop(self):
         """渲染线程：等 mpv 通知 → 渲染（阻塞到显示时刻）→ 通知 GUI 线程刷新"""
         while self._running:
@@ -173,9 +163,12 @@ class MpvPlayer(QObject):
         # 限制上限（1080p），避免 4K 源拖垮 CPU；不能压得更低，否则大窗口会被 Qt 二次放大而变糊
         scale = min(scale, 1920 / max(h, 1))
         w, h = max(2, int(w * scale) // 2 * 2), max(2, int(h * scale) // 2 * 2)
-        if (w, h) != self._wh or self._buf is None:
-            self._alloc(w, h)
 
+        # 每帧直接画进一张新 QImage：交出去的帧不会再被改写，省掉一次整帧拷贝
+        img = QImage(w, h, QImage.Format_RGB32)
+        buf = (C.c_char * img.sizeInBytes()).from_buffer(img.bits())
+        self._size[0], self._size[1] = w, h
+        stride = C.c_size_t(img.bytesPerLine())
         # 类型严格按 render.h：
         #   SW_SIZE    int[2]*   -> 数组地址
         #   SW_FORMAT  char*     -> 字符串指针本身（不是 char**）
@@ -184,18 +177,20 @@ class MpvPlayer(QObject):
         params = (_RParam * 5)(
             _RParam(P_SW_SIZE, C.cast(self._size, C.c_void_p)),
             _RParam(P_SW_FORMAT, C.cast(self._fmt, C.c_void_p)),
-            _RParam(P_SW_STRIDE, C.cast(C.byref(self._stride), C.c_void_p)),
-            _RParam(P_SW_POINTER, C.cast(self._buf, C.c_void_p)),
+            _RParam(P_SW_STRIDE, C.cast(C.byref(stride), C.c_void_p)),
+            _RParam(P_SW_POINTER, C.c_void_p(C.addressof(buf))),
             _RParam(P_END, None),
         )
-        if _lib.mpv_render_context_render(self._rc, C.cast(params, C.c_void_p)) < 0:
+        ok = _lib.mpv_render_context_render(self._rc, C.cast(params, C.c_void_p)) >= 0
+        del buf                 # 释放对 img 缓冲区的引用
+        if not ok:
             return
         _lib.mpv_render_context_report_swap(self._rc)
         if gen != self._gen:
             return              # 渲染期间装载了新片：这一帧属于上一片，丢掉
 
-        # 深拷贝：mpv 会复用这块缓冲区，不能把指针交出去
-        self._image = QImage(self._buf, w, h, w * 4, QImage.Format_RGB32).copy()
+        self._image = img
+        self._serial += 1
         self.frameReady.emit()
 
         if not self._first_frame:
@@ -206,6 +201,10 @@ class MpvPlayer(QObject):
     @property
     def image(self):
         return self._image
+
+    @Property(int, notify=frameReady)
+    def frameSerial(self):
+        return self._serial
 
     @Property(float, notify=positionChanged)
     def position(self):

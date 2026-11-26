@@ -20,13 +20,13 @@ import shiboken6
 
 from PySide6.QtCore import QSettings, QTimer, QUrl
 from PySide6.QtGui import QFontDatabase, QGuiApplication, QIcon
-from PySide6.QtQml import QQmlApplicationEngine, qmlRegisterSingletonType, qmlRegisterType
+from PySide6.QtQml import QQmlApplicationEngine, qmlRegisterSingletonType
 from PySide6.QtQuickControls2 import QQuickStyle
 from PySide6.QtWidgets import QApplication
 
 from hgservice import HgService
 from mpv_player import MpvPlayer
-from video_item import VideoItem, bind_player
+from video_item import install_video
 from native_window import create_global_hotkey, install_aspect_resize
 from updater import Updater
 
@@ -111,7 +111,7 @@ def main() -> int:
 
     QQuickStyle.setStyle("Basic")
     if args.shot:
-        # grabWindow() 会在持有 GIL 时等渲染线程，而 VideoItem 在渲染线程里要 GIL → 死锁（见 video_item.py）
+        # 截图用 basic 渲染循环：grabWindow() 直接在 GUI 线程渲染，不和渲染线程交接
         os.environ["QSG_RENDER_LOOP"] = "basic"
     # 用 QApplication 而不是 QGuiApplication：托盘图标的右键菜单（Qt.labs.platform）在 Windows 上依赖 Qt Widgets
     app = QApplication(sys.argv)
@@ -126,7 +126,7 @@ def main() -> int:
         if QFontDatabase.addApplicationFont(str(ROOT / "fonts" / name)) < 0:
             print(f"[warn] 字体加载失败：{name}，将使用回退字体", file=sys.stderr)
 
-    # 播放内核（libmpv → QVideoSink）与数据后端（本地 SDK）
+    # 播放内核（libmpv，画面经 image://mpv 显示）与数据后端（本地 SDK）
     # 注册为 QML 单例，QML 各文件（含 pragma Singleton）都能 import 使用
     player = MpvPlayer()
     backend = HgService()
@@ -134,13 +134,12 @@ def main() -> int:
     app._backend = backend
     updater = Updater()
     app._updater = updater
-    bind_player(player)
-    qmlRegisterType(VideoItem, "IHaveApple", 1, 0, "VideoItem")
     qmlRegisterSingletonType(MpvPlayer, "IHaveApple", 1, 0, "Player", lambda _e: player)
     qmlRegisterSingletonType(HgService, "IHaveApple", 1, 0, "Backend", lambda _e: backend)
     qmlRegisterSingletonType(Updater, "IHaveApple", 1, 0, "Updater", lambda _e: updater)
 
     engine = QQmlApplicationEngine()
+    install_video(engine, player)      # image://mpv：视频画面（见 video_item.py）
 
     def _qml_warn(ws):
         for w in ws:

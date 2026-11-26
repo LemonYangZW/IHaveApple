@@ -1,81 +1,36 @@
-"""video_item — 把播放器当前帧作为纹理显示在 QML 中
+"""video_item — 把播放器当前帧交给 QML 显示（image://mpv 图片提供器）
 
-不依赖 QtMultimedia：QQuickItem + QSGSimpleTextureNode，QImage 直接上传为纹理。
-（QQuickPaintedItem 会先用 QPainter 把整帧再画一遍，每帧多一次整帧拷贝。）
-QML 用法（注册为 IHaveApple.VideoItem）：
-    VideoItem { anchors.fill: parent }
+QML 里用 VideoFrame { anchors.fill: parent }（qml/VideoFrame.qml，本质是一个 Image）。
+启动时在加载 QML 之前调用 install_video(engine, player) 注册提供器。
 
-注意（死锁）：updatePaintNode 是 Python 代码，在 Qt Quick 渲染线程执行，需要拿 GIL。
-GUI 线程若在 Python 里调用会同步等待渲染线程的接口（典型是 window.grabWindow()），
-PySide 不释放 GIL → 两个线程互等。需要截图的脚本要在创建 QApplication 前设置
-QSG_RENDER_LOOP=basic（渲染改在 GUI 线程）。正常播放走事件循环，不受影响。
+为什么不再用自定义 QQuickItem（重写 updatePaintNode 上传纹理）：
+  updatePaintNode 是 Python，在 Qt Quick 渲染线程的 sync 阶段执行，先要拿到 GIL；
+  而 sync 期间 GUI 线程整段阻塞。只要别的 Python 线程（后端的预取 / 预载 / 封面、mpv 渲染线程）
+  正占着 GIL，sync 就要多等几 ms 到几十 ms。播放时每一帧都要 sync 一次，GUI 线程大半时间被卡住：
+  拖动窗口（系统的移动循环跑在 GUI 线程）一顿一顿，画面也跟着掉帧；暂停时没有新帧，所以不卡。
+  实测（最小场景）：只多一个忙碌的 Python 线程，sync 就从约 0ms 涨到 16ms，帧数掉一半。
+现在：取帧（requestImage）在 GUI 线程，纹理上传由 Qt 的 Image（C++）完成，渲染线程上不执行任何 Python。
 """
 
-from PySide6.QtCore import QRectF
-from PySide6.QtQuick import QQuickItem, QSGSimpleTextureNode, QSGTexture
-
-# 由 main.py 注入的播放器实例（全局单例）
-_player = None
+from PySide6.QtGui import QImage
+from PySide6.QtQuick import QQuickImageProvider
 
 
-def bind_player(p):
-    """注入播放器（全进程一个播放器）"""
-    global _player
-    _player = p
+class FrameProvider(QQuickImageProvider):
+    """image://mpv/<帧序号> → 播放器最新一帧。序号只用来让 Image 换地址重新取，内容总是最新帧。"""
+
+    def __init__(self, player):
+        super().__init__(QQuickImageProvider.ImageType.Image)
+        self._player = player
+        self._blank = QImage(2, 2, QImage.Format_RGB32)
+        self._blank.fill(0)
+
+    def requestImage(self, _id, _size, _requested):
+        # QML 的 Image 设为同步加载，这里在 GUI 线程调用
+        img = self._player.image
+        return img if img is not None else self._blank
 
 
-class VideoItem(QQuickItem):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setFlag(QQuickItem.ItemHasContents, True)
-        self._shown = None           # 已上传为纹理的那一帧，避免重复上传
-        # 尺寸变化时把物理像素尺寸告诉播放器 → 播放器按这个尺寸输出，UI 不做二次缩放
-        self.widthChanged.connect(self._report_size)
-        self.heightChanged.connect(self._report_size)
-        self.windowChanged.connect(self._report_size)
-        if _player is not None:
-            _player.frameReady.connect(self._on_frame)
-
-    def _on_frame(self):
-        if self.isVisible():
-            self.update()
-
-    def _report_size(self, *_):      # windowChanged 会带一个 window 参数
-        # 尺寸变了要重算纹理矩形：Qt 不会因几何变化自动调 updatePaintNode，
-        # 不刷新的话矩形停在旧尺寸 —— 放大窗口时会露出一片背景（暂停时一直留着），缩小则被裁掉看不出来
-        self.update()
-        win = self.window()
-        if _player is None or win is None:
-            return
-        dpr = win.devicePixelRatio()
-        w, h = round(self.width() * dpr), round(self.height() * dpr)
-        if w > 0 and h > 0:
-            _player.set_target_size(w, h)
-
-    def updatePaintNode(self, node, _data):
-        # 在 Qt Quick 渲染线程调用（此时 GUI 线程被同步阻塞），只做纹理上传
-        img = _player.image if _player is not None else None
-        if img is None or img.isNull():
-            return node
-        if node is None:
-            node = QSGSimpleTextureNode()
-            node.setOwnsTexture(True)          # 换纹理 / 销毁节点时由 Qt 释放旧纹理
-            node.setFiltering(QSGTexture.Filtering.Linear)
-            self._shown = None
-        if img is not self._shown:
-            node.setTexture(self.window().createTextureFromImage(img))
-            self._shown = img
-        node.setRect(self._fit(img.width(), img.height()))
-        return node
-
-    def _fit(self, sw, sh):
-        """画面撑满控件（9:16 源与 9:16 控件比例一致，不需要 letterbox）"""
-        tw, th = self.width(), self.height()
-        if sw <= 0 or sh <= 0 or tw <= 0 or th <= 0:
-            return QRectF(0, 0, tw, th)
-        src_ratio = sw / sh
-        if tw / th > src_ratio:
-            w = th * src_ratio
-            return QRectF((tw - w) / 2, 0, w, th)
-        h = tw / src_ratio
-        return QRectF(0, (th - h) / 2, tw, h)
+def install_video(engine, player):
+    """在 QML 引擎上注册 image://mpv（须在加载 QML 之前调用）"""
+    engine.addImageProvider("mpv", FrameProvider(player))

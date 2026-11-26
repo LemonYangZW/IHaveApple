@@ -24,3 +24,4 @@ deps/
 # 逆向取证工作目录（真机抓包、临时 APK、探针工具，不进版本库）
 .repro/
 .pi/
+prototype/shots/

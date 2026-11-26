@@ -16,18 +16,18 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 from PySide6.QtCore import Qt, QTimer, QUrl  # noqa: E402
 from PySide6.QtGui import QGuiApplication  # noqa: E402
-from PySide6.QtQml import qmlRegisterType  # noqa: E402
+from PySide6.QtQml import qmlRegisterSingletonInstance  # noqa: E402
 from PySide6.QtQuick import QQuickView  # noqa: E402
 
-import video_item  # noqa: E402
+from video_item import install_video  # noqa: E402
 from mpv_player import MpvPlayer  # noqa: E402
 
 app = QGuiApplication(sys.argv)
 player = MpvPlayer()
-video_item.bind_player(player)
-qmlRegisterType(video_item.VideoItem, "IHaveApple", 1, 0, "VideoItem")
+qmlRegisterSingletonInstance(MpvPlayer, "IHaveApple", 1, 0, "Player", player)
 
 view = QQuickView()
+install_video(view.engine(), player)
 view.setResizeMode(QQuickView.SizeRootObjectToView)
 view.setSource(QUrl.fromLocalFile(str(ROOT / "qml" / "SurfaceOnly.qml")))  # 绝对路径字符串会被当成 "e:" 协议的 URL
 view.resize(540, 960)
@@ -66,7 +66,7 @@ def stats(ts):
 
 def report():
     print(f"源帧率 {player._get_float('container-fps')}  mpv 丢帧 {player._get_int('frame-drop-count')}")
-    print(f"源尺寸 {player._video_wh}  输出 {player._wh}  控件目标 {player._target_wh}")
+    print(f"源尺寸 {player._video_wh}  输出 {player.image.size() if player.image else None}  控件目标 {player._target_wh}")
     print(f"出帧间隔：{stats(frames)}")
     print(f"上屏间隔：{stats(swaps)}")
     print(f"GUI 线程最长卡顿：{lag[0]:.1f}ms")

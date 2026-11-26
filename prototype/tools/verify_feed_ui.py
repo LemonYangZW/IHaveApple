@@ -11,7 +11,7 @@ os.environ["QSG_RENDER_LOOP"] = "basic"
 
 from PySide6.QtCore import QSettings, QTimer, QUrl            # noqa: E402
 from PySide6.QtGui import QFontDatabase                       # noqa: E402
-from PySide6.QtQml import QQmlApplicationEngine, QQmlExpression, qmlRegisterSingletonType, qmlRegisterType  # noqa: E402
+from PySide6.QtQml import QQmlApplicationEngine, QQmlExpression, qmlRegisterSingletonType  # noqa: E402
 from PySide6.QtQuickControls2 import QQuickStyle              # noqa: E402
 from PySide6.QtTest import QTest                              # noqa: E402
 from PySide6.QtWidgets import QApplication                    # noqa: E402
@@ -35,7 +35,7 @@ def check(cond, label, detail=""):
 
 from hgservice import HgService                        # noqa: E402
 from mpv_player import MpvPlayer                       # noqa: E402
-from video_item import VideoItem, bind_player          # noqa: E402
+from video_item import install_video          # noqa: E402
 
 QQuickStyle.setStyle("Basic")
 
@@ -51,12 +51,11 @@ def launch(run_index):
 
     player, backend = MpvPlayer(), HgService()
     curve_warning = []
-    bind_player(player)
-    qmlRegisterType(VideoItem, "IHaveApple", 1, 0, "VideoItem")
     qmlRegisterSingletonType(MpvPlayer, "IHaveApple", 1, 0, "Player", lambda _e: player)
     qmlRegisterSingletonType(HgService, "IHaveApple", 1, 0, "Backend", lambda _e: backend)
 
     engine = QQmlApplicationEngine()
+    install_video(engine, player)
     engine.warnings.connect(lambda ws: [curve_warning.append(w.toString()) for w in ws])
     ctx = engine.rootContext()
     for k, v in dict(launchPage="player", launchDrama=0, launchWidth=540, launchHeight=960,

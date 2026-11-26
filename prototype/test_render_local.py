@@ -7,30 +7,28 @@ import sys
 import time
 from pathlib import Path
 
-# 结尾要 grabWindow()：改用 basic 渲染循环，避免与 VideoItem 的 GIL 死锁（见 video_item.py）
+# 结尾要 grabWindow()：用 basic 渲染循环，直接在 GUI 线程渲染
 os.environ["QSG_RENDER_LOOP"] = "basic"
 
 from PySide6.QtCore import QTimer, Qt, QUrl
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtQuick import QQuickView
-from PySide6.QtQml import qmlRegisterSingletonInstance, qmlRegisterType
+from PySide6.QtQml import qmlRegisterSingletonInstance
 
 sys.path.insert(0, str(Path(__file__).parent))
 from mpv_player import MpvPlayer          # noqa: E402
-import video_item                          # noqa: E402
-from video_item import VideoItem           # noqa: E402
+from video_item import install_video      # noqa: E402
 
 MP4 = r"E:\projects\hongguo\hgd\cache\7701288600888937497_1080p.mp4"
 
 app = QGuiApplication(sys.argv)
 
 player = MpvPlayer()
-video_item.bind_player(player)
 
 qmlRegisterSingletonInstance(MpvPlayer, "IHaveApple", 1, 0, "Player", player)
-qmlRegisterType(VideoItem, "IHaveApple", 1, 0, "VideoItem")
 
 view = QQuickView()
+install_video(view.engine(), player)
 view.setSource(QUrl.fromLocalFile(str(Path(__file__).parent / "qml" / "Stage.qml")))
 print("QML errors:", [str(e) for e in view.errors()], flush=True)
 view.resize(430, 760)

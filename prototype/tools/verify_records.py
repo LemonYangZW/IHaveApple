@@ -74,14 +74,14 @@ if PHASE == "main":
 import shiboken6                                                   # noqa: E402
 from PySide6.QtCore import QObject, QSettings, QTimer, QUrl       # noqa: E402
 from PySide6.QtGui import QFontDatabase                           # noqa: E402
-from PySide6.QtQml import QQmlApplicationEngine, QQmlExpression, qmlRegisterSingletonType, qmlRegisterType  # noqa: E402
+from PySide6.QtQml import QQmlApplicationEngine, QQmlExpression, qmlRegisterSingletonType  # noqa: E402
 from PySide6.QtQuickControls2 import QQuickStyle                  # noqa: E402
 from PySide6.QtWidgets import QApplication                        # noqa: E402
 
 from hgservice import HgService                                   # noqa: E402
 from mpv_player import MpvPlayer                                  # noqa: E402
 from updater import Updater                                       # noqa: E402
-from video_item import VideoItem, bind_player                     # noqa: E402
+from video_item import install_video                     # noqa: E402
 
 QQuickStyle.setStyle("Basic")
 app = QApplication(sys.argv[:1])
@@ -94,14 +94,13 @@ for f in os.listdir(os.path.join(PROTO, "fonts")):
 player, backend, updater = MpvPlayer(), HgService(), Updater()
 backend._backfill_covers_async = lambda *a, **k: None   # 不联网补封面
 app._keep = (player, backend, updater)
-bind_player(player)
-qmlRegisterType(VideoItem, "IHaveApple", 1, 0, "VideoItem")
 qmlRegisterSingletonType(MpvPlayer, "IHaveApple", 1, 0, "Player", lambda _e: player)
 qmlRegisterSingletonType(HgService, "IHaveApple", 1, 0, "Backend", lambda _e: backend)
 qmlRegisterSingletonType(Updater, "IHaveApple", 1, 0, "Updater", lambda _e: updater)
 
 WARNINGS = []
 engine = QQmlApplicationEngine()
+install_video(engine, player)
 engine.warnings.connect(lambda ws: [WARNINGS.append(w.toString()) or log("[qml]", w.toString()) for w in ws])
 ctx = engine.rootContext()
 for k, v in dict(launchPage="player", launchDrama=0, launchWidth=540, launchHeight=960,

@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 from PySide6.QtCore import QPoint, QSettings, Qt, QTimer, QUrl
 from PySide6.QtGui import QFontDatabase
-from PySide6.QtQml import QQmlApplicationEngine, qmlRegisterSingletonType, qmlRegisterType
+from PySide6.QtQml import QQmlApplicationEngine, qmlRegisterSingletonType
 from PySide6.QtQuickControls2 import QQuickStyle
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
@@ -15,7 +15,7 @@ OUT.mkdir(parents=True, exist_ok=True)
 
 from hgservice import HgService          # noqa: E402
 from mpv_player import MpvPlayer         # noqa: E402
-from video_item import VideoItem, bind_player    # noqa: E402
+from video_item import install_video    # noqa: E402
 
 QQuickStyle.setStyle("Basic")
 app = QApplication(sys.argv)
@@ -27,12 +27,11 @@ for f in (PROTO / "fonts").glob("*.ttf"):
 
 player, backend = MpvPlayer(), HgService()
 app._p, app._b = player, backend
-bind_player(player)
-qmlRegisterType(VideoItem, "IHaveApple", 1, 0, "VideoItem")
 qmlRegisterSingletonType(MpvPlayer, "IHaveApple", 1, 0, "Player", lambda _e: player)
 qmlRegisterSingletonType(HgService, "IHaveApple", 1, 0, "Backend", lambda _e: backend)
 
 engine = QQmlApplicationEngine()
+install_video(engine, player)
 engine.warnings.connect(lambda ws: [print("[qml]", w.toString(), flush=True) for w in ws])
 ctx = engine.rootContext()
 for k, v in dict(launchPage="player", launchDrama=1, launchWidth=540, launchHeight=960,
